@@ -1,0 +1,7 @@
+ATSAPIAI/
+.DS_Store
+.env
+.env.*
+Backend/.env
+Frontend/.env
+node_modules/
