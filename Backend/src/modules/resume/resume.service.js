@@ -1,91 +1,43 @@
-import { PDFParse } from 'pdf-parse';
-import OpenAI from 'openai';
 import ResumePG from './resume.model.pg.js';
 import ResumeMongo from './resume.model.mongo.js';
 import ApiError from '../../utils/ApiError.js';
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
-
 /**
- * Parse PDF buffer to text
+ * Proxy file to ATSAPIAI for parsing and AI analysis
  * @param {Buffer} fileBuffer 
- * @returns {Promise<string>}
- */
-const parseResumePDF = async (fileBuffer) => {
-    try {
-        const pdfParser = new PDFParse({ data: fileBuffer });
-        const data = await pdfParser.getText();
-        return data.text;
-    } catch (error) {
-        console.error('PDF Parse Error:', error);
-        throw new ApiError(500, `Failed to parse PDF file: ${error.message}`);
-    }
-};
-
-/**
- * Analyze text with OpenAI
- * @param {string} text 
+ * @param {string} filename 
  * @returns {Promise<Object>}
  */
-const analyzeResumeWithAI = async (text) => {
-    // Check for valid API key
-    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'your_openai_api_key' || process.env.OPENAI_API_KEY === 'your_secret_key') {
-        console.warn('⚠️ OpenAI API Key missing or invalid. Using MOCK data.');
-        return {
-            skills: ['JavaScript', 'React', 'Node.js', 'Express', 'MongoDB'],
-            techStack: ['MERN Stack', 'TailwindCSS', 'Redux'],
-            experienceLevel: 'Mid',
-            strengths: ['Full Stack Development', 'API Design'],
-            weaknesses: ['Public Speaking', 'System Architecture'],
-            improvementSuggestions: ['Contribute to open source', 'Learn Docker'],
-            resumeScore: 85
-        };
-    }
-
+const proxyToATSAPIAI = async (fileBuffer, filename) => {
     try {
-        const prompt = `
-      You are an expert AI Applicant Tracking System (ATS). Analyze the following resume text and extract key information in strict JSON format.
-      
-      Resume Text:
-      "${text.substring(0, 10000)}" // Truncate to avoid token limits if necessary
-      
-      Return ONLY valid JSON with this structure:
-      {
-        "skills": ["skill1", "skill2"],
-        "techStack": ["tech1", "tech2"],
-        "experienceLevel": "Entry/Mid/Senior/Executive",
-        "strengths": ["strength1", "strength2"],
-        "weaknesses": ["weakness1", "weakness2"],
-        "improvementSuggestions": ["suggestion1", "suggestion2"],
-        "resumeScore": 0-100 (integer)
-      }
-    `;
+        const formData = new FormData();
+        const blob = new Blob([fileBuffer], { type: 'application/pdf' });
+        formData.append('resume', blob, filename || 'resume.pdf');
+        formData.append('job_description', 'General Software Engineer role focusing on modern web development and system design.'); // Default JD if not provided
 
-        const completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo", // Changed from gpt-4-turbo-preview to ensure availability
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_object" },
+        const response = await fetch('http://localhost:5000/api/screen', {
+            method: 'POST',
+            body: formData,
         });
 
-        const content = completion.choices[0].message.content;
-        return JSON.parse(content);
-    } catch (error) {
-        if (error.code === 'insufficient_quota' || error.type === 'insufficient_quota') {
-            console.warn('⚠️ OpenAI Quota Exceeded. Using MOCK data fallback.');
-            return {
-                skills: ['JavaScript', 'React', 'Node.js', 'Express', 'MongoDB'],
-                techStack: ['MERN Stack', 'TailwindCSS', 'Redux'],
-                experienceLevel: 'Mid',
-                strengths: ['Full Stack Development', 'API Design'],
-                weaknesses: ['Public Speaking', 'System Architecture'],
-                improvementSuggestions: ['Contribute to open source', 'Learn Docker'],
-                resumeScore: 85
-            };
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('ATSAPIAI Error:', errorText);
+            throw new Error(`ATSAPIAI returned ${response.status}: ${errorText}`);
         }
-        console.error('OpenAI Error:', error);
-        throw new ApiError(502, 'Failed to analyze resume with AI');
+
+        return await response.json();
+    } catch (error) {
+        console.error('ATSAPIAI Proxy Error:', error);
+        
+        // Fallback mock data if ATSAPIAI is down
+        console.warn('⚠️ ATSAPIAI unreachable or failed. Using MOCK data fallback.');
+        return {
+            final_ats_score: 85,
+            matched_skills: ['JavaScript', 'React', 'Node.js', 'Express', 'MongoDB'],
+            missing_skills: ['Docker', 'AWS'],
+            improvement_suggestions: ['Contribute to open source', 'Learn Docker']
+        };
     }
 };
 
@@ -95,33 +47,45 @@ const analyzeResumeWithAI = async (text) => {
  * @param {Object} file (Multer object)
  */
 const processAndSaveResume = async (userId, file) => {
-    // 1. Parse PDF
-    const rawText = await parseResumePDF(file.buffer);
+    // 1. Send to ATSAPIAI
+    const aiData = await proxyToATSAPIAI(file.buffer, file.originalname);
 
-    // 2. Analyze with AI
-    const aiData = await analyzeResumeWithAI(rawText);
+    // Map ATSAPIAI response to our DB schema
+    const extractedSkills = aiData.matched_skills || [];
+    const resumeScore = aiData.final_ats_score || 0;
+    const suggestions = aiData.improvement_suggestions || [];
 
-    // 3. Store in PostgreSQL
+    // 2. Store in PostgreSQL
     const resumePG = await ResumePG.create({
         userId,
         fileUrl: 'memory_storage', // In real app, upload to S3 and get URL
-        extractedSkills: [...aiData.skills, ...aiData.techStack],
-        experienceLevel: aiData.experienceLevel,
-        resumeScore: aiData.resumeScore,
+        extractedSkills: extractedSkills,
+        experienceLevel: 'Mid', // Mocked or extracted differently later
+        resumeScore: resumeScore,
     });
 
-    // 4. Store in MongoDB
-    const resumeMongo = await ResumeMongo.create({
-        userId,
-        rawText,
-        aiStructuredData: aiData,
-        aiSuggestions: aiData.improvementSuggestions,
-    });
+    // 3. Store in MongoDB
+    let mongoId = null;
+    try {
+        const resumeMongo = await ResumeMongo.create({
+            userId,
+            rawText: 'Text parsed by ATSAPIAI', // We don't have raw text from ATSAPIAI endpoint
+            aiStructuredData: aiData,
+            aiSuggestions: suggestions,
+        });
+        mongoId = resumeMongo._id;
+    } catch (e) {
+        console.warn('⚠️ MongoDB unreachable, skipping Mongo resume save');
+    }
 
     return {
         id: resumePG.id,
-        structured: aiData,
-        mongoId: resumeMongo._id
+        structured: {
+            skills: extractedSkills,
+            improvementSuggestions: suggestions,
+            resumeScore: resumeScore
+        },
+        mongoId: mongoId
     };
 };
 
@@ -130,12 +94,27 @@ const processAndSaveResume = async (userId, file) => {
  * @param {string} userId 
  */
 const getUserResumes = async (userId) => {
-    return await ResumePG.findAll({ where: { userId } });
+    return await ResumePG.findAll({ 
+        where: { userId },
+        order: [['createdAt', 'DESC']]
+    });
+};
+
+/**
+ * Get Latest User Resume Score
+ * @param {string} userId 
+ */
+const getLatestResumeScore = async (userId) => {
+    const resume = await ResumePG.findOne({
+        where: { userId },
+        order: [['createdAt', 'DESC']]
+    });
+    
+    return resume ? resume.resumeScore : 0;
 };
 
 export default {
-    parseResumePDF,
-    analyzeResumeWithAI,
     processAndSaveResume,
-    getUserResumes
+    getUserResumes,
+    getLatestResumeScore
 };

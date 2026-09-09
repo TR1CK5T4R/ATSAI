@@ -13,5 +13,10 @@ export const resumeApi = {
     getMyResume: async () => {
         const response = await api.get('/resume/my');
         return response.data;
+    },
+
+    getLatestScore: async () => {
+        const response = await api.get('/resume/score/latest');
+        return response.data;
     }
 };

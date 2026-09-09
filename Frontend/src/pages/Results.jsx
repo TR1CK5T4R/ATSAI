@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useWindowSize } from 'react-use';
 import Confetti from 'react-confetti';
@@ -6,38 +7,82 @@ import { FiAward, FiDownload, FiCheckCircle, FiAlertTriangle, FiBookOpen } from 
 import SkillChart from '../components/ui/SkillChart';
 import CourseCard from '../components/ui/CourseCard';
 import CircularProgress from '../components/ui/CircularProgress';
+import { interviewApi } from '../api/interview.api';
+import { resumeApi } from '../api/resume.api';
+import toast from 'react-hot-toast';
 
-// Mock Data (Replace with API data later)
 const MOCK_RESULTS = {
-    finalScore: 88,
-    feedback: "Strong technical understanding, specially in React and System Design. Need to improve on database optimization queries.",
-    skillBreakdown: [
-        { name: "React", score: 92 },
-        { name: "Node.js", score: 85 },
-        { name: "System Design", score: 88 },
-        { name: "Database", score: 65 },
-        { name: "Communication", score: 90 }
-    ],
-    strengths: ["Component Architecture", "State Management", "API Design"],
-    weaknesses: ["SQL Optimization", "Caching Strategies"],
-    recommendedCourses: [
-        { title: "Advanced PostgreSQL Performance", description: "Deep dive into indexing and query planning." },
-        { title: "Redis for Scalable Apps", description: "Learn caching patterns for high-load systems." },
-        { title: "System Design Interview Prep", description: "Ace the architectural round." }
-    ]
+    finalScore: 0,
+    feedback: "Generating feedback...",
+    skillBreakdown: [],
+    strengths: [],
+    weaknesses: [],
+    recommendedCourses: []
 };
 
 const Results = () => {
+    const { state } = useLocation();
+    const navigate = useNavigate();
+    const sessionId = state?.sessionId;
+
     const { width, height } = useWindowSize();
-    const [results, setResults] = useState(MOCK_RESULTS); // TODO: Fetch from API using sessionId
+    const [results, setResults] = useState(MOCK_RESULTS);
+    const [resumeScore, setResumeScore] = useState(0);
     const [showConfetti, setShowConfetti] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        if (results.finalScore >= 80) {
-            setShowConfetti(true);
-            setTimeout(() => setShowConfetti(false), 8000); // Stop after 8s
-        }
-    }, [results]);
+        const fetchResults = async () => {
+            try {
+                // Fetch Resume Score
+                const resumeData = await resumeApi.getLatestScore();
+                if (resumeData.success) {
+                    setResumeScore(resumeData.score);
+                }
+
+                // Fetch Interview Results if sessionId exists
+                if (sessionId) {
+                    const interviewData = await interviewApi.getSession(sessionId);
+                    if (interviewData.success && interviewData.data.log?.overallFeedback) {
+                        const feedback = interviewData.data.log.overallFeedback;
+                        
+                        // Map skill breakdown object to array format needed by chart
+                        const formattedSkills = Object.entries(feedback.skillBreakdown || {}).map(([name, score]) => ({
+                            name,
+                            score
+                        }));
+
+                        // Map recommended courses from array of strings to array of objects
+                        const formattedCourses = (feedback.recommendedCourses || []).map(course => ({
+                            title: typeof course === 'string' ? course : course.title,
+                            description: typeof course === 'string' ? 'Recommended based on your interview performance.' : course.description
+                        }));
+
+                        setResults({
+                            finalScore: feedback.finalScore || 0,
+                            feedback: feedback.feedback || "Good effort overall.",
+                            skillBreakdown: formattedSkills,
+                            strengths: feedback.strengths || [],
+                            weaknesses: feedback.weaknesses || [],
+                            recommendedCourses: formattedCourses
+                        });
+
+                        if (feedback.finalScore >= 80) {
+                            setShowConfetti(true);
+                            setTimeout(() => setShowConfetti(false), 8000);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Error fetching results", error);
+                toast.error("Failed to load interview results. Showing limited data.");
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchResults();
+    }, [sessionId]);
 
     const containerVariants = {
         hidden: { opacity: 0 },
@@ -48,6 +93,14 @@ const Results = () => {
         hidden: { opacity: 0, y: 20 },
         visible: { opacity: 1, y: 0 }
     };
+
+    if (isLoading) {
+        return (
+            <div className="flex items-center justify-center h-[calc(100vh-100px)]">
+                <div className="w-12 h-12 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-6xl mx-auto py-10 relative">
@@ -74,32 +127,40 @@ const Results = () => {
 
                 {/* Top Cards Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Overall Score */}
-                    <motion.div variants={itemVariants} className="md:col-span-1 bg-surface border border-border rounded-2xl p-8 flex flex-col items-center justify-center text-center shadow-xl">
-                        <h3 className="text-lg font-bold text-muted mb-6 flex items-center gap-2">
-                            <FiAward className="text-primary" /> Overall Score
-                        </h3>
-                        <CircularProgress score={results.finalScore} size={160} strokeWidth={12} />
+                    {/* Overall Scores */}
+                    <motion.div variants={itemVariants} className="md:col-span-1 flex flex-col gap-6">
+                        <div className="bg-surface border border-border rounded-2xl p-6 flex flex-col items-center justify-center text-center shadow-xl flex-1">
+                            <h3 className="text-sm font-bold text-muted mb-4 flex items-center gap-2 uppercase tracking-widest">
+                                <FiAward className="text-primary" /> Interview Score
+                            </h3>
+                            <CircularProgress score={results.finalScore} size={140} strokeWidth={10} />
+                        </div>
+                        <div className="bg-surface border border-border rounded-2xl p-6 flex flex-col items-center justify-center text-center shadow-xl flex-1">
+                            <h3 className="text-sm font-bold text-muted mb-4 flex items-center gap-2 uppercase tracking-widest">
+                                <FiAward className="text-accent" /> Resume Score
+                            </h3>
+                            <CircularProgress score={resumeScore} size={140} strokeWidth={10} />
+                        </div>
                     </motion.div>
 
                     {/* Feedback */}
-                    <motion.div variants={itemVariants} className="md:col-span-2 bg-gradient-to-br from-surface to-primary/5 border border-border rounded-2xl p-8 shadow-xl">
+                    <motion.div variants={itemVariants} className="md:col-span-2 bg-gradient-to-br from-surface to-primary/5 border border-border rounded-2xl p-8 shadow-xl flex flex-col">
                         <h3 className="text-lg font-bold mb-4">AI Feedback</h3>
-                        <p className="text-text/90 leading-relaxed text-lg">
+                        <p className="text-text/90 leading-relaxed text-lg italic">
                             "{results.feedback}"
                         </p>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mt-8">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mt-auto pt-8">
                             <div>
                                 <h4 className="flex items-center gap-2 text-green-500 font-bold mb-3">
                                     <FiCheckCircle /> Strengths
                                 </h4>
                                 <ul className="space-y-2">
-                                    {results.strengths.map((s, i) => (
+                                    {results.strengths.length > 0 ? results.strengths.map((s, i) => (
                                         <li key={i} className="text-sm text-muted bg-green-500/5 px-3 py-1.5 rounded-lg border border-green-500/10">
                                             {s}
                                         </li>
-                                    ))}
+                                    )) : <li className="text-sm text-muted">No strengths recorded.</li>}
                                 </ul>
                             </div>
                             <div>
@@ -107,11 +168,11 @@ const Results = () => {
                                     <FiAlertTriangle /> Areas to Improve
                                 </h4>
                                 <ul className="space-y-2">
-                                    {results.weaknesses.map((s, i) => (
+                                    {results.weaknesses.length > 0 ? results.weaknesses.map((s, i) => (
                                         <li key={i} className="text-sm text-muted bg-red-500/5 px-3 py-1.5 rounded-lg border border-red-500/10">
                                             {s}
                                         </li>
-                                    ))}
+                                    )) : <li className="text-sm text-muted">No weaknesses recorded.</li>}
                                 </ul>
                             </div>
                         </div>
@@ -119,22 +180,26 @@ const Results = () => {
                 </div>
 
                 {/* Skill Breakdown Chart */}
-                <motion.div variants={itemVariants} className="bg-surface border border-border rounded-2xl p-8 shadow-xl">
-                    <h3 className="text-xl font-bold mb-6">Skill Analysis</h3>
-                    <SkillChart data={results.skillBreakdown} />
-                </motion.div>
+                {results.skillBreakdown.length > 0 && (
+                    <motion.div variants={itemVariants} className="bg-surface border border-border rounded-2xl p-8 shadow-xl">
+                        <h3 className="text-xl font-bold mb-6">Skill Analysis</h3>
+                        <SkillChart data={results.skillBreakdown} />
+                    </motion.div>
+                )}
 
                 {/* Recommended Courses */}
-                <motion.div variants={itemVariants}>
-                    <h3 className="text-2xl font-bold mb-6 flex items-center gap-2">
-                        <FiBookOpen className="text-accent" /> Recommended for You
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {results.recommendedCourses.map((course, index) => (
-                            <CourseCard key={index} course={course} index={index} />
-                        ))}
-                    </div>
-                </motion.div>
+                {results.recommendedCourses.length > 0 && (
+                    <motion.div variants={itemVariants}>
+                        <h3 className="text-2xl font-bold mb-6 flex items-center gap-2">
+                            <FiBookOpen className="text-accent" /> Recommended for You
+                        </h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {results.recommendedCourses.map((course, index) => (
+                                <CourseCard key={index} course={course} index={index} />
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
 
             </motion.div>
         </div>

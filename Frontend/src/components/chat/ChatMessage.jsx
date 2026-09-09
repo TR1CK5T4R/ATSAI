@@ -33,9 +33,11 @@ const ChatMessage = ({ message }) => {
                     : "bg-primary text-white rounded-tr-none"
             )}>
                 {isAI ? (
-                    <ReactMarkdown className="prose prose-invert prose-sm max-w-none">
-                        {message.content}
-                    </ReactMarkdown>
+                    <div className="prose prose-invert prose-sm max-w-none">
+                        <ReactMarkdown>
+                            {message.content}
+                        </ReactMarkdown>
+                    </div>
                 ) : (
                     <p>{message.content}</p>
                 )}

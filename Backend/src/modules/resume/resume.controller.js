@@ -25,7 +25,16 @@ const getMyResumes = catchAsync(async (req, res) => {
     });
 });
 
+const getLatestScore = catchAsync(async (req, res) => {
+    const score = await resumeService.getLatestResumeScore(req.user.id);
+    res.status(200).json({
+        success: true,
+        score
+    });
+});
+
 export default {
     uploadResume,
-    getMyResumes
+    getMyResumes,
+    getLatestScore
 };

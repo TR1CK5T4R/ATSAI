@@ -32,5 +32,6 @@ router.post(
 );
 
 router.get('/my', protect, resumeController.getMyResumes);
+router.get('/score/latest', protect, resumeController.getLatestScore);
 
 export default router;

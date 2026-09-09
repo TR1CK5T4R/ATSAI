@@ -10,8 +10,8 @@ const connectMongo = async () => {
         await mongoose.connect(config.mongoUri);
         console.log('🍃 MongoDB Connected Successfully');
     } catch (error) {
-        console.error('❌ MongoDB Connection Error:', error);
-        process.exit(1);
+        console.error('❌ MongoDB Connection Error:', error.message);
+        console.warn('⚠️  Server will continue without MongoDB. Chat features may be unavailable.');
     }
 };
 

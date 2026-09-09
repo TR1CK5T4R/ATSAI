@@ -4,6 +4,41 @@ import ResumePG from '../resume/resume.model.pg.js';
 import ai from './interview.ai.js';
 import ApiError from '../../utils/ApiError.js';
 
+// In-memory fallback for when MongoDB is unavailable
+const memoryLogs = new Map();
+
+const safeCreateLog = async (data) => {
+    try {
+        // Try creating in MongoDB
+        const log = await InterviewLog.create(data);
+        return log;
+    } catch (error) {
+        console.warn('⚠️ MongoDB unavailable. Using in-memory log for session', data.sessionId);
+        const logData = { 
+            ...data, 
+            save: async function() {
+                memoryLogs.set(this.sessionId, this);
+            }
+        };
+        memoryLogs.set(data.sessionId, logData);
+        return logData;
+    }
+};
+
+const safeGetLog = async (sessionId) => {
+    try {
+        const log = await InterviewLog.findOne({ sessionId });
+        if (log) return log;
+        // If not found, maybe it's in memory?
+        if (memoryLogs.has(sessionId)) return memoryLogs.get(sessionId);
+        return null;
+    } catch (error) {
+        // MongoDB error, fallback to memory
+        if (memoryLogs.has(sessionId)) return memoryLogs.get(sessionId);
+        return null;
+    }
+};
+
 /**
  * Start a new interview session
  */
@@ -29,8 +64,8 @@ const startInterview = async (userId, roleApplied) => {
     // 3. Generate First Question
     const aiResponse = await ai.generateFirstQuestion(resumeData, roleApplied);
 
-    // 4. Create Mongo Log
-    const initialLog = await InterviewLog.create({
+    // 4. Create Mongo Log (or fallback)
+    await safeCreateLog({
         sessionId: session.id,
         userId,
         roleApplied,
@@ -58,8 +93,8 @@ const processAnswer = async (sessionId, userId, userAnswer) => {
         throw new ApiError(400, 'Invalid or completed session');
     }
 
-    // 2. Get Chat History from Mongo
-    const log = await InterviewLog.findOne({ sessionId });
+    // 2. Get Chat History from Mongo (or fallback)
+    const log = await safeGetLog(sessionId);
     if (!log) throw new ApiError(404, 'Interview log not found');
 
     const lastAiMessage = log.messages.filter(m => m.role === 'ai').pop();
@@ -103,10 +138,10 @@ const completeInterview = async (sessionId, userId) => {
     const session = await InterviewSession.findOne({ where: { id: sessionId, userId } });
     if (!session) throw new ApiError(404, 'Session not found');
 
-    const log = await InterviewLog.findOne({ sessionId });
+    const log = await safeGetLog(sessionId);
 
     // 1. Generate Final Report
-    const report = await ai.generateFinalReport(log.messages);
+    const report = await ai.generateFinalReport(log?.messages || []);
 
     // 2. Update PG Session
     session.status = 'completed';
@@ -124,9 +159,11 @@ const completeInterview = async (sessionId, userId) => {
     }
 
     // 4. Update Mongo with Full Feedback
-    log.overallFeedback = report;
-    log.skillBreakdown = report.skillBreakdown;
-    await log.save();
+    if (log) {
+        log.overallFeedback = report;
+        log.skillBreakdown = report.skillBreakdown;
+        await log.save();
+    }
 
     return report;
 };
@@ -138,7 +175,7 @@ const getInterviewSession = async (sessionId, userId) => {
     const session = await InterviewSession.findOne({ where: { id: sessionId, userId } });
     if (!session) throw new ApiError(404, 'Session not found');
 
-    const log = await InterviewLog.findOne({ sessionId });
+    const log = await safeGetLog(sessionId);
     return { session, log };
 };
 
