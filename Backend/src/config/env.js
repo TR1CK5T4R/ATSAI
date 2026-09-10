@@ -31,7 +31,9 @@ const config = {
 
     // Auth
     jwtSecret: process.env.JWT_SECRET,
-    jwtExpire: process.env.JWT_EXPIRE || '7d',
+    jwtExpire: process.env.JWT_EXPIRE || '15m',            // access token lifetime
+    jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET + '_refresh',
+    jwtRefreshExpire: process.env.JWT_REFRESH_EXPIRE || '7d', // refresh token lifetime
 
     // Gemini
     geminiApiKey: process.env.GEMINI_API_KEY,

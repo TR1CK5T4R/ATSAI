@@ -1,12 +1,7 @@
-import express from 'express';
-import authController from './auth.controller.js';
-import validation from './auth.validation.js';
-import { protect, } from '../../middleware/auth.middleware.js'; // fixed import
+/**
+ * auth.routes.js — Canonical auth router delegating to modules/users
+ */
 
-const router = express.Router();
+import { authRouter } from '../users/users.routes.js';
 
-router.post('/register', authController.validate(validation.register.body), authController.register);
-router.post('/login', authController.validate(validation.login.body), authController.login);
-router.get('/me', protect, authController.getMe);
-
-export default router;
+export default authRouter;
