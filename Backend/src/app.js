@@ -26,7 +26,6 @@ import ApiError from './utils/ApiError.js';
 import errorHandler from './middleware/error.middleware.js';
 
 // ── Route modules ─────────────────────────────────────────────────────────────
-import authRoutes     from './modules/auth/auth.routes.js';
 import resumeRoutes   from './modules/resume/resume.routes.js';
 import interviewRoutes from './modules/interview/interview.routes.js';
 import usersRoutes, { authRouter, candidateRouter } from './modules/users/users.routes.js';
