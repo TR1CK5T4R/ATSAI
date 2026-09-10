@@ -1,6 +1,6 @@
-import { InterviewSession, SkillScore } from './interview.model.pg.js';
-import InterviewLog from './interview.model.mongo.js';
-import ResumePG from '../resume/resume.model.pg.js';
+import Interview from './Interview.model.pg.js';
+import InterviewLog from './InterviewChat.model.mongo.js';
+import Resume from '../resume/Resume.model.pg.js';
 import ai from './interview.ai.js';
 import ApiError from '../../utils/ApiError.js';
 
@@ -44,22 +44,28 @@ const safeGetLog = async (sessionId) => {
  */
 const startInterview = async (userId, roleApplied) => {
     // 1. Create PG Session
-    const session = await InterviewSession.create({
+    const session = await Interview.create({
         userId,
-        roleApplied,
         status: 'ongoing',
     });
 
     // 2. Fetch User Resume (for context)
-    const resume = await ResumePG.findOne({
+    const resume = await Resume.findOne({
         where: { userId },
         order: [['createdAt', 'DESC']],
     });
 
     const resumeData = resume ? {
-        skills: resume.extractedSkills,
-        experience: resume.experienceLevel
+        skills: resume.skills,
+        experienceYears: resume.experienceYears,
+        parsedJson: resume.parsedJson,
     } : {};
+
+    // Link resume to interview if found
+    if (resume) {
+        session.resumeId = resume.id;
+        await session.save();
+    }
 
     // 3. Generate First Question
     const aiResponse = await ai.generateFirstQuestion(resumeData, roleApplied);
@@ -88,7 +94,7 @@ const startInterview = async (userId, roleApplied) => {
  */
 const processAnswer = async (sessionId, userId, userAnswer) => {
     // 1. Verify Session
-    const session = await InterviewSession.findOne({ where: { id: sessionId, userId } });
+    const session = await Interview.findOne({ where: { id: sessionId, userId } });
     if (!session || session.status === 'completed') {
         throw new ApiError(400, 'Invalid or completed session');
     }
@@ -98,7 +104,7 @@ const processAnswer = async (sessionId, userId, userAnswer) => {
     if (!log) throw new ApiError(404, 'Interview log not found');
 
     const lastAiMessage = log.messages.filter(m => m.role === 'ai').pop();
-    const currentQuestion = lastAiMessage ? lastAiMessage.content : "Tell me about yourself.";
+    const currentQuestion = lastAiMessage ? lastAiMessage.text : "Tell me about yourself.";
 
     // 3. Evaluate Answer
     const evaluation = await ai.evaluateAnswer(currentQuestion, userAnswer, session.roleApplied);
@@ -106,8 +112,7 @@ const processAnswer = async (sessionId, userId, userAnswer) => {
     // 4. Update Log with User Answer & Evaluation
     log.messages.push({
         role: 'user',
-        content: userAnswer,
-        evaluation: evaluation,
+        text: userAnswer,
         timestamp: new Date()
     });
 
@@ -116,7 +121,7 @@ const processAnswer = async (sessionId, userId, userAnswer) => {
 
     log.messages.push({
         role: 'ai',
-        content: nextQuestionData.question,
+        text: nextQuestionData.question,
         timestamp: new Date()
     });
 
@@ -135,7 +140,7 @@ const processAnswer = async (sessionId, userId, userAnswer) => {
  * Complete Interview and Generate Report
  */
 const completeInterview = async (sessionId, userId) => {
-    const session = await InterviewSession.findOne({ where: { id: sessionId, userId } });
+    const session = await Interview.findOne({ where: { id: sessionId, userId } });
     if (!session) throw new ApiError(404, 'Session not found');
 
     const log = await safeGetLog(sessionId);
@@ -143,20 +148,14 @@ const completeInterview = async (sessionId, userId) => {
     // 1. Generate Final Report
     const report = await ai.generateFinalReport(log?.messages || []);
 
-    // 2. Update PG Session
+    // 2. Update PG Session — map to spec fields
     session.status = 'completed';
-    session.finalScore = report.finalScore;
+    session.score = report.finalScore ?? null;
+    session.feedbackSummary = report.summary ?? null;
     await session.save();
 
-    // 3. Save Skills to PG
-    if (report.skillBreakdown) {
-        const skills = Object.entries(report.skillBreakdown).map(([name, score]) => ({
-            sessionId: session.id,
-            skillName: name,
-            score: score
-        }));
-        await SkillScore.bulkCreate(skills);
-    }
+    // 3. Persist skill breakdown in feedbackSummary (JSON) or Mongo
+    // SkillScore table removed in v2 — skill data stored in MongoDB log
 
     // 4. Update Mongo with Full Feedback
     if (log) {
@@ -172,7 +171,7 @@ const completeInterview = async (sessionId, userId) => {
  * Get Interview History
  */
 const getInterviewSession = async (sessionId, userId) => {
-    const session = await InterviewSession.findOne({ where: { id: sessionId, userId } });
+    const session = await Interview.findOne({ where: { id: sessionId, userId } });
     if (!session) throw new ApiError(404, 'Session not found');
 
     const log = await safeGetLog(sessionId);

@@ -1,54 +1,10 @@
-import { DataTypes } from 'sequelize';
-import bcrypt from 'bcrypt';
-import { sequelize } from '../../config/database.js';
+/**
+ * auth.model.js — Re-exports the canonical User model
+ *
+ * The single source of truth for the User Sequelize model lives in
+ * src/modules/users/User.model.js. This file simply re-exports it so
+ * that the auth module (auth.service.js, auth.middleware.js) can import
+ * from a local relative path without knowing about the users/ directory.
+ */
 
-const User = sequelize.define('User', {
-    id: {
-        type: DataTypes.UUID,
-        defaultValue: DataTypes.UUIDV4,
-        primaryKey: true,
-    },
-    name: {
-        type: DataTypes.STRING,
-        allowNull: false,
-    },
-    email: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-        validate: {
-            isEmail: true,
-        },
-    },
-    password: {
-        type: DataTypes.STRING,
-        allowNull: false,
-    },
-    role: {
-        type: DataTypes.ENUM('candidate', 'admin'),
-        allowNull: false,
-        defaultValue: 'candidate',
-    },
-}, {
-    timestamps: true,
-    hooks: {
-        beforeCreate: async (user) => {
-            if (user.password) {
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(user.password, salt);
-            }
-        },
-        beforeUpdate: async (user) => {
-            if (user.changed('password')) {
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(user.password, salt);
-            }
-        },
-    },
-});
-
-User.prototype.isPasswordMatch = async function (password) {
-    return await bcrypt.compare(password, this.password);
-};
-
-export default User;
+export { default } from '../users/User.model.js';

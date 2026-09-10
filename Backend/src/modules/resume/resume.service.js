@@ -1,5 +1,5 @@
-import ResumePG from './resume.model.pg.js';
-import ResumeMongo from './resume.model.mongo.js';
+import Resume from './Resume.model.pg.js';
+import ResumeAnalysis from './resume.model.mongo.js'; // keep existing Mongo model for raw text
 import ApiError from '../../utils/ApiError.js';
 
 /**
@@ -55,21 +55,21 @@ const processAndSaveResume = async (userId, file) => {
     const resumeScore = aiData.final_ats_score || 0;
     const suggestions = aiData.improvement_suggestions || [];
 
-    // 2. Store in PostgreSQL
-    const resumePG = await ResumePG.create({
+    // 2. Store in PostgreSQL (new field names: skills, parsedJson, experienceYears)
+    const resumePG = await Resume.create({
         userId,
-        fileUrl: 'memory_storage', // In real app, upload to S3 and get URL
-        extractedSkills: extractedSkills,
-        experienceLevel: 'Mid', // Mocked or extracted differently later
-        resumeScore: resumeScore,
+        fileUrl: file.path || null,
+        skills: extractedSkills,
+        parsedJson: aiData,
+        experienceYears: 0,            // TODO: parse from aiData when Gemini is wired
     });
 
     // 3. Store in MongoDB
     let mongoId = null;
     try {
-        const resumeMongo = await ResumeMongo.create({
+        const resumeMongo = await ResumeAnalysis.create({
             userId,
-            rawText: 'Text parsed by ATSAPIAI', // We don't have raw text from ATSAPIAI endpoint
+            rawText: 'Text parsed by ATSAPIAI',
             aiStructuredData: aiData,
             aiSuggestions: suggestions,
         });
@@ -94,7 +94,7 @@ const processAndSaveResume = async (userId, file) => {
  * @param {string} userId 
  */
 const getUserResumes = async (userId) => {
-    return await ResumePG.findAll({ 
+    return await Resume.findAll({ 
         where: { userId },
         order: [['createdAt', 'DESC']]
     });
@@ -105,12 +105,12 @@ const getUserResumes = async (userId) => {
  * @param {string} userId 
  */
 const getLatestResumeScore = async (userId) => {
-    const resume = await ResumePG.findOne({
+    const resume = await Resume.findOne({
         where: { userId },
         order: [['createdAt', 'DESC']]
     });
     
-    return resume ? resume.resumeScore : 0;
+    return resume ? (resume.parsedJson?.final_ats_score ?? 0) : 0;
 };
 
 export default {

@@ -1,54 +1,84 @@
-const { DataTypes } = require('sequelize');
-const { sequelize } = require('../../config/postgres');
-const bcrypt = require('bcrypt');
+/**
+ * User.model.js — Sequelize model for platform users
+ *
+ * Fields:
+ *   id            UUID PK (auto-generated)
+ *   name          STRING  — display name
+ *   email         STRING  — unique, validated
+ *   passwordHash  STRING  — bcrypt hash (NEVER store plain text)
+ *   role          ENUM    — candidate | recruiter | admin
+ *
+ * Hooks:
+ *   beforeCreate / beforeUpdate — auto-hash password when changed
+ *
+ * Instance methods:
+ *   isPasswordMatch(plain) → Boolean
+ */
 
-const User = sequelize.define('User', {
-    id: {
-        type: DataTypes.UUID,
-        defaultValue: DataTypes.UUIDV4,
-        primaryKey: true
-    },
-    name: {
-        type: DataTypes.STRING,
-        allowNull: false
-    },
-    email: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-        validate: {
-            isEmail: true
-        }
-    },
-    password: {
-        type: DataTypes.STRING,
-        allowNull: false
-    },
-    role: {
-        type: DataTypes.ENUM('candidate', 'admin', 'interviewer'),
-        defaultValue: 'candidate',
-        allowNull: false
-    }
-}, {
-    hooks: {
-        beforeCreate: async (user) => {
-            if (user.password) {
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(user.password, salt);
-            }
+import { DataTypes } from 'sequelize';
+import bcrypt from 'bcrypt';
+import { sequelize } from '../../config/database.js';
+
+const BCRYPT_ROUNDS = 12;
+
+const User = sequelize.define(
+    'User',
+    {
+        id: {
+            type: DataTypes.UUID,
+            defaultValue: DataTypes.UUIDV4,
+            primaryKey: true,
         },
-        beforeUpdate: async (user) => {
-            if (user.changed('password')) {
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(user.password, salt);
-            }
-        }
+        name: {
+            type: DataTypes.STRING(128),
+            allowNull: false,
+            validate: { len: [2, 128] },
+        },
+        email: {
+            type: DataTypes.STRING(254),
+            allowNull: false,
+            unique: true,
+            validate: { isEmail: true },
+        },
+        passwordHash: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            field: 'password_hash', // postgres column name
+        },
+        role: {
+            type: DataTypes.ENUM('candidate', 'recruiter', 'admin'),
+            allowNull: false,
+            defaultValue: 'candidate',
+        },
     },
-    timestamps: true
-});
+    {
+        tableName: 'users',
+        timestamps: true, // createdAt, updatedAt
+        underscored: true, // snake_case column names
+        hooks: {
+            /** Hash the password before INSERT */
+            beforeCreate: async (user) => {
+                if (user.passwordHash) {
+                    user.passwordHash = await bcrypt.hash(user.passwordHash, BCRYPT_ROUNDS);
+                }
+            },
+            /** Re-hash only when passwordHash field changes on UPDATE */
+            beforeUpdate: async (user) => {
+                if (user.changed('passwordHash')) {
+                    user.passwordHash = await bcrypt.hash(user.passwordHash, BCRYPT_ROUNDS);
+                }
+            },
+        },
+    }
+);
 
-User.prototype.validPassword = async function (password) {
-    return await bcrypt.compare(password, this.password);
+/**
+ * Compare a plain-text password against the stored hash.
+ * @param {string} plain - Password to check
+ * @returns {Promise<boolean>}
+ */
+User.prototype.isPasswordMatch = async function (plain) {
+    return bcrypt.compare(plain, this.passwordHash);
 };
 
-module.exports = User;
+export default User;
