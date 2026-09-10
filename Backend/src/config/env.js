@@ -4,6 +4,8 @@
  * Import this instead of `process.env` directly throughout the app.
  */
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -15,6 +17,9 @@ if (missing.length > 0) {
     console.error(`\n❌ Missing required environment variables: ${missing.join(', ')}\n`);
     process.exit(1);
 }
+
+// Backend root directory (this file lives in Backend/src/config → root is ../../)
+const BACKEND_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 // ── Exported config object ────────────────────────────────────────────────────
 const config = {
@@ -38,12 +43,17 @@ const config = {
     // Gemini
     geminiApiKey: process.env.GEMINI_API_KEY,
     geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+    geminiMock: process.env.GEMINI_MOCK === 'true',   // dev/test: deterministic offline parsing
 
     // CORS
     clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
 
-    // Upload
+    // Upload / file storage
     maxFileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 5 * 1024 * 1024, // 5 MB
+    storageDriver: process.env.STORAGE_DRIVER || 'local',                     // local | s3 | cloudinary
+    uploadDir: process.env.UPLOAD_DIR || 'uploads',                           // local driver only
+    uploadDirAbs: path.resolve(BACKEND_ROOT, process.env.UPLOAD_DIR || 'uploads'),
 };
 
 export default config;
+

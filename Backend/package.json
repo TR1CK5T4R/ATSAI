@@ -14,6 +14,7 @@
   "scripts": {
     "test": "node tests/test_auth.js",
     "test:auth": "node tests/test_auth.js",
+    "test:resume": "node tests/test_resume.js",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed:courses": "node seeders/seedCourses.js"
@@ -30,6 +31,7 @@
     "helmet": "^8.1.0",
     "joi": "^18.0.2",
     "jsonwebtoken": "^9.0.3",
+    "mammoth": "^1.13.0",
     "mongoose": "^9.2.1",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",

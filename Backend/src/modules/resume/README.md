@@ -1,65 +1,92 @@
-# 📄 Resume Upload & AI Parsing Module
+# 📄 Resume Module — Upload, Parse & Structured Storage
 
-This module allows users to upload PDF resumes, which are then parsed and analyzed by OpenAI to extract structured data and improvement suggestions.
+Candidates upload a resume (PDF/DOCX); the file is stored locally through a
+swappable storage abstraction, its text is extracted, and **Gemini** returns a
+strict-JSON structured profile which is validated, then persisted.
 
-## 🚀 Features
+```
+POST /api/resume/upload
+   │  multer (5 MB, PDF/DOCX only)
+   │  storage.saveFile()        ← src/services/storage (local driver → Backend/uploads)
+   │  extractResumeText()       ← pdf-parse v2 (PDF) / mammoth (DOCX)
+   │  parseResumeWithGemini()   ← strict responseSchema + Joi validation + 3 retries
+   ▼
+PostgreSQL resumes.parsed_json  (+ best-effort MongoDB mirror of raw text)
+```
 
-- **PDF Parsing**: Extracts raw text from uploaded PDF files.
-- **AI Analysis**: Uses OpenAI (GPT-4) to extract:
-  - Skills & Tech Stack
-  - Experience Level
-  - Strengths & Weaknesses
-  - Improvement Suggestions
-  - Resume Score (0-100)
-- **Dual Storage**:
-  - **PostgreSQL**: Stores structured queryable data (Skills, Score, Level).
-  - **MongoDB**: Stores raw text and full AI JSON response (for logs/retraining).
-- **Security**:
-  - Max file size (5MB).
-  - PDF file type validation.
-  - JWT Authentication required.
+## Endpoints
 
-## 🛠️ Setup
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/resume/upload` | Bearer (any role) | Multipart upload, field **`resume`**. Returns `201 { id, fileUrl, structured, mongoId }` |
+| GET | `/api/resume/:id` | Bearer | One resume. Owner only for candidates; recruiter/admin can read any |
+| GET | `/api/resume/my` | Bearer | Current user's resumes (newest first) |
+| GET | `/api/resume/score/latest` | Bearer | Heuristic 0–100 resume-strength score |
 
-1.  **Environment Variables**:
-    Ensure `.env` has:
-    ```env
-    OPENAI_API_KEY=sk-...
-    MAX_FILE_SIZE=5242880 # 5MB in bytes
-    ```
+### Parsed JSON contract (stored in `resumes.parsed_json`)
 
-2.  **Dependencies**:
-    Already installed: `multer`, `pdf-parse`, `openai`.
+```json
+{
+  "name": "Aarav Sharma",
+  "email": "aarav.sharma@example.com",
+  "skills": ["React", "Node.js", "PostgreSQL"],
+  "experience": [{ "title": "", "company": "", "startDate": "", "endDate": "", "description": "" }],
+  "education": [{ "degree": "", "institution": "", "year": "" }],
+  "projects": [{ "name": "", "description": "", "technologies": [""] }],
+  "experienceYears": 3.5,
+  "seniorityLevel": "Mid"
+}
+```
 
-## 🧪 API Endpoints
+Enforced twice: natively by Gemini (`responseSchema` +
+`responseMimeType: application/json`) and again by Joi (`RESUME_PARSED_SCHEMA`)
+with unknown-key stripping.
 
-### 1. Upload Resume
-- **URL**: `POST /api/resume/upload`
-- **Headers**:
-  ```
-  Authorization: Bearer <token>
-  Content-Type: multipart/form-data
-  ```
-- **Body**:
-  - `resume`: (File) The PDF file to upload.
+## Reliability
 
-- **Response**:
-  ```json
-  {
-    "success": true,
-    "message": "Resume analyzed successfully",
-    "data": {
-      "id": "uuid...",
-      "structured": { ...AI JSON... },
-      "mongoId": "objectId..."
-    }
-  }
-  ```
+- **Retries**: 3 attempts, exponential backoff (750 ms → 1.5 s) + jitter.
+  Both network/API failures *and* Joi schema failures trigger a retry.
+- **Clear errors**: after the final attempt → `502 "AI resume parsing failed
+  after 3 attempts — <reason>"`. No key configured → `503` with setup
+  instructions. We deliberately do **not** fall back to fake data on real
+  failures (a fabricated profile would poison downstream interviews).
+- **No orphans**: if anything fails after the file is saved, the file is deleted.
+- Text is capped at 15 000 chars before the LLM call (cost control).
+- Scanned/image-only resumes → `422` (OCR is a future feature).
 
-### 2. Get My Resumes
-- **URL**: `GET /api/resume/my`
-- **Headers**:
-  ```
-  Authorization: Bearer <token>
-  ```
-- **Response**: List of your uploaded resumes/analyses from PostgreSQL.
+## File storage abstraction
+
+`src/services/storage/index.js` picks the driver from `STORAGE_DRIVER`:
+
+| Driver | Status | Storage location |
+|--------|--------|------------------|
+| `local` | ✅ default | `Backend/uploads/<yyyy-mm>/<uuid>.<ext>` (git-ignored) |
+| `s3` | TODO | add `s3.storage.js` implementing the same interface |
+| `cloudinary` | TODO | add `cloudinary.storage.js` implementing the same interface |
+
+Driver interface: `saveFile({buffer, originalName, mimeType}) → {key, publicUrl, ...}`,
+`deleteFile(key)`, `ensureStorageReady()`. The local driver's `publicUrl` is
+served by `express.static('/uploads')` in `app.js`.
+
+## Environment variables
+
+```env
+MAX_FILE_SIZE=5242880        # 5 MB
+STORAGE_DRIVER=local         # local | s3 | cloudinary
+UPLOAD_DIR=uploads           # relative to Backend/ (local driver only)
+GEMINI_API_KEY=<your key>    # required for real parsing
+GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MOCK=false            # true → deterministic offline parsing (dev/tests only)
+```
+
+## Testing
+
+```bash
+cd Backend
+npm run test:resume   # boots an ephemeral server, exercises every endpoint
+```
+
+Covers: PDF upload happy path, `GET /:id`, ownership 403, unknown id 404,
+non-PDF/DOCX 400, oversize 413, file serving via `fileUrl`, and the
+LLM-failure → retry → 502 path. Uses an in-memory generated sample PDF
+(`Aarav Sharma` resume) — no fixture files needed.

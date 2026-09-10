@@ -17,7 +17,7 @@ import { sequelize } from '../config/database.js';
 
 // ── Import all Sequelize models ───────────────────────────────────────────────
 import User      from '../modules/users/User.model.js';
-import Resume    from '../modules/resume/Resume.model.pg.js';
+import Resume    from '../modules/resume/resume.model.pg.js';
 import Interview from '../modules/interview/Interview.model.pg.js';
 import Feedback  from '../modules/interview/Feedback.model.pg.js';
 import Course    from '../modules/courses/Course.model.pg.js';
