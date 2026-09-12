@@ -7,7 +7,8 @@
  *     into our exact shape at the API level (not just prompt-parsed).
  *  2. VALIDATION: the returned JSON is re-validated/coerced with Joi
  *     (resume.validation.js → RESUME_PARSED_SCHEMA) — LLMs drift, schemas don't.
- *  3. RETRY: up to MAX_ATTEMPTS tries with exponential backoff + jitter.
+ *  3. RETRY: up to 3 tries with exponential backoff + jitter (shared logic in
+ *     src/services/llm/gemini.client.js).
  *     Retries cover transient API failures (429/5xx/network) AND schema-validation
  *     failures. Permanent errors (invalid key, unknown model, bad request) fail
  *     fast — retrying them only adds latency.
@@ -18,23 +19,14 @@
  *     An explicit dev-only GEMINI_MOCK=true opt-in exists for offline work.
  */
 
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
-import config from '../../config/env.js';
-import ApiError from '../../utils/ApiError.js';
+import { SchemaType } from '@google/generative-ai';
+import {
+    isMockMode,
+    assertConfigured,
+    generateJson,
+    withRetry,
+} from '../../services/llm/gemini.client.js';
 import { validateParsedResume, SENIORITY_LEVELS } from './resume.validation.js';
-
-const MAX_ATTEMPTS = 3;
-const BASE_DELAY_MS = 750; // backoff: 750ms, 1500ms (+ jitter)
-
-const genAI = new GoogleGenerativeAI(config.geminiApiKey);
-
-/**
- * True only when a real (non-placeholder) Gemini key is configured.
- */
-const hasValidKey = () =>
-    Boolean(config.geminiApiKey) &&
-    !config.geminiApiKey.startsWith('REPLACE_') &&
-    config.geminiApiKey !== 'your_gemini_api_key_here';
 
 /**
  * Native Gemini response schema — the strict JSON contract.
@@ -122,41 +114,6 @@ ${resumeText}
 """`.trim();
 
 /**
- * One Gemini call → parsed JSON object.
- * (responseSchema + responseMimeType make malformed JSON practically impossible;
- * JSON.parse is kept as a final safety net.)
- *
- * The client is created per call (cheap) so that a key rotated via env/config
- * takes effect without a process restart — and so tests can simulate failures.
- */
-const getClient = () =>
-    genAI.getGenerativeModel({
-        model: config.geminiModel,
-        generationConfig: {
-            temperature: 0.1, // near-deterministic for extraction tasks
-            responseMimeType: 'application/json',
-            responseSchema: RESUME_SCHEMA,
-        },
-    });
-
-const callGeminiOnce = async (resumeText) => {
-    const model = getClient();
-    const result = await model.generateContent(buildPrompt(resumeText));
-    const text = result.response.text();
-    return JSON.parse(text);
-};
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Gemini fetch errors carry an HTTP `status`. 400/401/403/404 mean the key,
- * model name or request is wrong — identical on every retry, so stop early.
- * Everything else (429 quota, 5xx, network, bad JSON, schema drift) is retried.
- */
-const PERMANENT_STATUSES = new Set([400, 401, 403, 404]);
-const isPermanentError = (err) => PERMANENT_STATUSES.has(err?.status);
-
-/**
  * Dev-only deterministic sample (used when GEMINI_MOCK=true).
  * Matches RESUME_PARSED_SCHEMA exactly so the whole downstream pipeline
  * (validation → PG → Mongo → GET) can be exercised without an API key.
@@ -221,23 +178,21 @@ const MOCK_PARSED_RESUME = () =>
  */
 const parseResumeWithGemini = async (resumeText) => {
     // Explicit offline/dev mode — opt-in via env, never a silent fallback
-    if (config.geminiMock) {
+    if (isMockMode()) {
         console.warn('🧪 GEMINI_MOCK=true — returning deterministic mock resume parse (no API call)');
         return MOCK_PARSED_RESUME();
     }
 
-    if (!hasValidKey()) {
-        throw new ApiError(
-            503,
-            'GEMINI_API_KEY is not configured — add it to Backend/.env, or set GEMINI_MOCK=true for offline development'
-        );
-    }
+    assertConfigured();
 
-    let lastError;
-
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-            const raw = await callGeminiOnce(resumeText);
+    // Retry covers API failures AND schema-validation failures (see gemini.client.js)
+    return withRetry(
+        async () => {
+            const raw = await generateJson({
+                prompt: buildPrompt(resumeText),
+                schema: RESUME_SCHEMA,
+                temperature: 0.1, // near-deterministic for extraction tasks
+            });
 
             const { error, value } = validateParsedResume(raw);
             if (error) {
@@ -246,28 +201,8 @@ const parseResumeWithGemini = async (resumeText) => {
                 );
             }
             return value;
-        } catch (err) {
-            lastError = err;
-            console.warn(`⚠️  Gemini resume parse failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${err.message}`);
-
-            if (isPermanentError(err)) break;
-            if (attempt < MAX_ATTEMPTS) {
-                // Exponential backoff + jitter avoids thundering-herd retries
-                await sleep(BASE_DELAY_MS * 2 ** (attempt - 1) + Math.random() * 250);
-            }
-        }
-    }
-
-    // Raw provider details stay in the server log above; the client gets a clear, safe message
-    if (isPermanentError(lastError)) {
-        throw new ApiError(
-            502,
-            `AI resume parsing is misconfigured (Gemini returned ${lastError.status}) — check GEMINI_API_KEY and GEMINI_MODEL.`
-        );
-    }
-    throw new ApiError(
-        502,
-        `AI resume parsing failed after ${MAX_ATTEMPTS} attempts. Please try again shortly.`
+        },
+        { label: 'resume parsing' }
     );
 };
 
