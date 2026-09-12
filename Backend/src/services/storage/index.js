@@ -2,7 +2,8 @@
  * storage/index.js — Pluggable file-storage facade (Strategy pattern)
  *
  * Business code (e.g. resume.service.js) only ever calls:
- *      storage.saveFile({ buffer, originalName, mimeType }) → { key, publicUrl, ... }
+ *      storage.saveFile({ buffer, originalName, mimeType }) → { key, ... }
+ *      storage.getFile(key)   → { stream, size }   (callers enforce auth first)
  *      storage.deleteFile(key)
  *
  * The concrete driver is chosen by the STORAGE_DRIVER env var, so moving to a
@@ -14,7 +15,8 @@
  *      STORAGE_DRIVER=cloudinary → TODO: add cloudinary.storage.js (cloudinary SDK)
  *
  * Every driver MUST implement the same interface:
- *      saveFile({ buffer, originalName, mimeType }) → { key, absolutePath?, publicUrl, size, driver }
+ *      saveFile({ buffer, originalName, mimeType }) → { key, absolutePath?, size, driver }
+ *      getFile(key)                                 → { stream, size } (ApiError 404 if missing)
  *      deleteFile(key)                              → Promise<boolean>
  *      ensureStorageReady()                         → Promise<void>
  */
@@ -37,6 +39,7 @@ const activeDriver = DRIVERS[config.storageDriver] ?? localDisk;
 const storage = {
     driverName: DRIVERS[config.storageDriver] ? config.storageDriver : 'local',
     saveFile: (input) => activeDriver.saveFile(input),
+    getFile: (key) => activeDriver.getFile(key),
     deleteFile: (key) => activeDriver.deleteFile(key),
     ensureStorageReady: () => activeDriver.ensureStorageReady(),
 };

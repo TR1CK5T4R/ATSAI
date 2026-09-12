@@ -10,6 +10,8 @@
  *   - The MongoDB mirror is best-effort only — the module works without Mongo.
  */
 
+import crypto from 'node:crypto';
+import path from 'node:path';
 import mongoose from 'mongoose';
 import Resume from './resume.model.pg.js';
 import ResumeAnalysis from './resume.model.mongo.js';
@@ -40,10 +42,15 @@ const processAndSaveResume = async (userId, file) => {
         //    + 3 attempts with exponential backoff — all inside resume.ai.js)
         const parsed = await parseResumeWithGemini(text);
 
-        // 4. Persist the structured result in PostgreSQL
+        // 4. Persist the structured result in PostgreSQL.
+        //    The id is generated up front so fileUrl can point at the
+        //    authenticated download route for this exact row.
+        const id = crypto.randomUUID();
         const resume = await Resume.create({
+            id,
             userId,
-            fileUrl: saved.publicUrl,
+            fileKey: saved.key,
+            fileUrl: `/api/resume/${id}/file`,
             parsedJson: parsed,
             skills: parsed.skills,
             experienceYears: parsed.experienceYears,
@@ -98,6 +105,38 @@ const getResumeById = async (id) => {
     return resume;
 };
 
+/** Content types for the formats the upload route accepts */
+const CONTENT_TYPES = {
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+/**
+ * GET /api/resume/:id/file — open the stored resume file for download.
+ * Ownership is checked by the controller before this is called.
+ * @param {import('sequelize').Model} resume - row from getResumeById
+ * @returns {Promise<{ stream, size: number, contentType: string, filename: string }>}
+ * @throws ApiError 404 when the resume has no stored file
+ */
+const getResumeFile = async (resume) => {
+    // Rows created before fileKey existed only have the old '/uploads/<key>' URL
+    const key = resume.fileKey
+        || (resume.fileUrl?.startsWith('/uploads/') ? resume.fileUrl.slice('/uploads/'.length) : null);
+    if (!key) {
+        throw new ApiError(404, 'No file is stored for this resume');
+    }
+
+    const { stream, size } = await storage.getFile(key);
+    const ext = path.extname(key).toLowerCase();
+
+    return {
+        stream,
+        size,
+        contentType: CONTENT_TYPES[ext] || 'application/octet-stream',
+        filename: `resume-${resume.id}${ext}`,
+    };
+};
+
 /**
  * GET /api/resume/my — newest-first list of the user's resumes.
  * @param {string} userId
@@ -142,6 +181,7 @@ const getLatestResumeScore = async (userId) => {
 export default {
     processAndSaveResume,
     getResumeById,
+    getResumeFile,
     getUserResumes,
     getLatestResumeScore,
 };

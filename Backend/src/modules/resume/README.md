@@ -20,6 +20,7 @@ PostgreSQL resumes.parsed_json  (+ best-effort MongoDB mirror of raw text)
 |--------|------|------|-------------|
 | POST | `/api/resume/upload` | Bearer (any role) | Multipart upload, field **`resume`**. Returns `201 { id, fileUrl, structured, mongoId }` |
 | GET | `/api/resume/:id` | Bearer | One resume. Owner only for candidates; recruiter/admin can read any |
+| GET | `/api/resume/:id/file` | Bearer | Downloads the original PDF/DOCX (same access rules). This is the `fileUrl` value |
 | GET | `/api/resume/my` | Bearer | Current user's resumes (newest first) |
 | GET | `/api/resume/score/latest` | Bearer | Heuristic 0–100 resume-strength score |
 
@@ -64,9 +65,12 @@ with unknown-key stripping.
 | `s3` | TODO | add `s3.storage.js` implementing the same interface |
 | `cloudinary` | TODO | add `cloudinary.storage.js` implementing the same interface |
 
-Driver interface: `saveFile({buffer, originalName, mimeType}) → {key, publicUrl, ...}`,
-`deleteFile(key)`, `ensureStorageReady()`. The local driver's `publicUrl` is
-served by `express.static('/uploads')` in `app.js`.
+Driver interface: `saveFile({buffer, originalName, mimeType}) → {key, ...}`,
+`getFile(key) → {stream, size}`, `deleteFile(key)`, `ensureStorageReady()`.
+
+Uploaded files are **private**. Nothing serves `uploads/` statically. The row
+stores the driver key in `fileKey`, which is never returned to clients. The only way to
+fetch a file is `GET /api/resume/:id/file`, which requires a login and an ownership check.
 
 ## Environment variables
 
@@ -87,6 +91,6 @@ npm run test:resume   # boots an ephemeral server, exercises every endpoint
 ```
 
 Covers: PDF upload happy path, `GET /:id`, ownership 403, unknown id 404,
-non-PDF/DOCX 400, oversize 413, file serving via `fileUrl`, and the
+non-PDF/DOCX 400, oversize 413, authenticated download via `fileUrl` (and no public `/uploads` access), and the
 LLM-failure → retry → 502 path. Uses an in-memory generated sample PDF
 (`Aarav Sharma` resume) — no fixture files needed.

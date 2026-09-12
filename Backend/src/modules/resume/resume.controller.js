@@ -28,22 +28,52 @@ const uploadResume = catchAsync(async (req, res) => {
 });
 
 /**
- * GET /api/resume/:id
- * Candidates may only read their own resumes; recruiters/admins may read any.
+ * Candidates may only access their own resumes; recruiters/admins may access any.
+ * @throws ApiError 403
  */
-const getResumeById = catchAsync(async (req, res) => {
-    const resume = await resumeService.getResumeById(req.params.id);
-
-    const isOwner = String(resume.userId) === String(req.user.id);
-    const isStaff = req.user.role === 'recruiter' || req.user.role === 'admin';
+const assertCanAccess = (resume, user) => {
+    const isOwner = String(resume.userId) === String(user.id);
+    const isStaff = user.role === 'recruiter' || user.role === 'admin';
     if (!isOwner && !isStaff) {
         throw new ApiError(403, 'You are not allowed to view this resume');
     }
+};
+
+/**
+ * GET /api/resume/:id
+ */
+const getResumeById = catchAsync(async (req, res) => {
+    const resume = await resumeService.getResumeById(req.params.id);
+    assertCanAccess(resume, req.user);
 
     res.status(200).json({
         success: true,
         data: resume,
     });
+});
+
+/**
+ * GET /api/resume/:id/file — stream the original PDF/DOCX (same access rules as GET /:id).
+ */
+const downloadResumeFile = catchAsync(async (req, res) => {
+    const resume = await resumeService.getResumeById(req.params.id);
+    assertCanAccess(resume, req.user);
+
+    const { stream, size, contentType, filename } = await resumeService.getResumeFile(resume);
+
+    res.set({
+        'Content-Type': contentType,
+        'Content-Length': size,
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Cache-Control': 'private, no-store', // personal data: never cache in shared proxies
+    });
+
+    // A read error mid-stream can't become a JSON error (headers are sent) — just end the response
+    stream.on('error', (err) => {
+        console.error('❌ Resume file stream failed:', err.message);
+        res.destroy(err);
+    });
+    stream.pipe(res);
 });
 
 /**
@@ -74,6 +104,7 @@ const getLatestScore = catchAsync(async (req, res) => {
 export default {
     uploadResume,
     getResumeById,
+    downloadResumeFile,
     getMyResumes,
     getLatestScore,
 };
