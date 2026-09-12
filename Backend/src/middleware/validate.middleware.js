@@ -60,10 +60,16 @@ export const validate = (schema) => (req, _res, next) => {
         return next(new ApiError(400, errorMessage));
     }
 
-    // Assign sanitized/coerced values back to request
+    // Assign sanitized/coerced values back to request.
+    // Express 5 exposes req.query as a getter-only property, so it is redefined
+    // instead of assigned (plain assignment throws in strict-mode ESM).
     for (const key of validSchemaKeys) {
         if (value && value[key]) {
-            req[key] = value[key];
+            if (key === 'query') {
+                Object.defineProperty(req, 'query', { value: value.query, writable: true, configurable: true, enumerable: true });
+            } else {
+                req[key] = value[key];
+            }
         }
     }
 
