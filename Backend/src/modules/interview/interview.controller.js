@@ -1,40 +1,46 @@
+/**
+ * interview.controller.js — HTTP handlers for the interview module
+ * Thin layer: input is already Joi-validated by the routes; access rules and
+ * business logic live in interview.service.js.
+ */
+
 import catchAsync from '../../utils/catchAsync.js';
 import interviewService from './interview.service.js';
-import ApiError from '../../utils/ApiError.js';
 
-const startInterview = catchAsync(async (req, res) => {
-    const { roleApplied } = req.body;
-    if (!roleApplied) throw new ApiError(400, 'Role applied is required');
-
-    const result = await interviewService.startInterview(req.user.id, roleApplied);
-    res.status(201).json({ success: true, data: result });
+/** POST /api/interview/create { resumeId, targetRole? } */
+const createInterview = catchAsync(async (req, res) => {
+    const data = await interviewService.createInterview(req.user, req.body);
+    res.status(201).json({ success: true, data });
 });
 
+/** POST /api/interview/:id/answer { text } */
 const submitAnswer = catchAsync(async (req, res) => {
-    const { sessionId, answer } = req.body;
-    if (!sessionId || !answer) throw new ApiError(400, 'Session ID and answer are required');
-
-    const result = await interviewService.processAnswer(sessionId, req.user.id, answer);
-    res.status(200).json({ success: true, data: result });
+    const data = await interviewService.submitAnswer(req.user, req.params.id, req.body.text);
+    res.status(200).json({ success: true, data });
 });
 
-const completeInterview = catchAsync(async (req, res) => {
-    const { sessionId } = req.body;
-    if (!sessionId) throw new ApiError(400, 'Session ID is required');
-
-    const result = await interviewService.completeInterview(sessionId, req.user.id);
-    res.status(200).json({ success: true, data: result });
+/** POST /api/interview/:id/finish */
+const finishInterview = catchAsync(async (req, res) => {
+    const data = await interviewService.finishInterview(req.user, req.params.id);
+    res.status(200).json({ success: true, data });
 });
 
+/** GET /api/interview/:id */
 const getInterview = catchAsync(async (req, res) => {
-    const { sessionId } = req.params;
-    const result = await interviewService.getInterviewSession(sessionId, req.user.id);
-    res.status(200).json({ success: true, data: result });
+    const data = await interviewService.getInterview(req.user, req.params.id);
+    res.status(200).json({ success: true, data });
+});
+
+/** GET /api/interview/history?limit&offset&status&userId */
+const getHistory = catchAsync(async (req, res) => {
+    const data = await interviewService.getHistory(req.user, req.query);
+    res.status(200).json({ success: true, data });
 });
 
 export default {
-    startInterview,
+    createInterview,
     submitAnswer,
-    completeInterview,
-    getInterview
+    finishInterview,
+    getInterview,
+    getHistory,
 };
