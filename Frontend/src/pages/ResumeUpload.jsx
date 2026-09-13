@@ -61,7 +61,8 @@ const ResumeUpload = () => {
     };
 
     const startInterview = () => {
-        navigate('/interview', { state: { roleApplied: analysis?.roleMatch || 'Software Engineer' } });
+        // The interview is generated from this exact resume (role is derived server-side)
+        navigate('/interview', { state: { resumeId: analysis?.id } });
     };
 
     // ... (Keep existing UI rendering logic)
