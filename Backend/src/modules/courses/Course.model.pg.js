@@ -8,7 +8,8 @@
  *   id          UUID PK
  *   title       STRING  — course title
  *   skillTag    STRING  — primary skill this course covers (e.g. 'React', 'System Design')
- *   price       DECIMAL — price in USD (0 = free)
+ *   price       DECIMAL — price in `currency` (0 = free); returned as a JS number
+ *   currency    STRING  — ISO 4217 code (default USD)
  *   url         STRING  — link to the course
  *   description TEXT    — short description
  *
@@ -42,7 +43,18 @@ const Course = sequelize.define(
             allowNull: false,
             defaultValue: 0.00,
             validate: { min: 0 },
-            comment: 'USD price (0.00 = free)',
+            comment: 'Price in `currency` (0.00 = free)',
+            // pg returns DECIMAL as a string to avoid float loss; prices fit a JS number safely
+            get() {
+                const raw = this.getDataValue('price');
+                return raw === null || raw === undefined ? raw : Number(raw);
+            },
+        },
+        currency: {
+            type: DataTypes.STRING(3),
+            allowNull: false,
+            defaultValue: 'USD',
+            comment: 'ISO 4217 currency code',
         },
         url: {
             type: DataTypes.STRING(2048),

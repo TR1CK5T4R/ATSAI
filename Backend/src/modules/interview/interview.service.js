@@ -343,6 +343,7 @@ const getHistory = async (user, { limit, offset, status, userId }) => {
 };
 
 export default {
+    loadInterview,
     createInterview,
     submitAnswer,
     finishInterview,
