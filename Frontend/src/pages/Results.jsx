@@ -8,6 +8,7 @@ import SkillChart from '../components/ui/SkillChart';
 import CourseCard from '../components/ui/CourseCard';
 import CircularProgress from '../components/ui/CircularProgress';
 import { interviewApi } from '../api/interview.api';
+import { coursesApi } from '../api/courses.api';
 import { resumeApi } from '../api/resume.api';
 import toast from 'react-hot-toast';
 
@@ -51,11 +52,19 @@ const Results = () => {
                             score
                         }));
 
-                        // Until the courses module is live, show skill gaps as study topics
-                        const formattedCourses = (report.skillGaps || []).map(skill => ({
-                            title: skill,
-                            description: 'Skill gap identified in your interview.'
-                        }));
+                        // Courses matched to this interview's skill gaps (non-fatal if it fails)
+                        let formattedCourses = [];
+                        try {
+                            const rec = await coursesApi.getRecommendations(sessionId);
+                            formattedCourses = (rec.data?.recommendations || []).map(({ course, why }) => ({
+                                id: course.id,
+                                title: course.title,
+                                description: why,
+                                link: course.url,
+                            }));
+                        } catch {
+                            console.warn('Course recommendations unavailable');
+                        }
 
                         setResults({
                             finalScore: report.score || 0,
