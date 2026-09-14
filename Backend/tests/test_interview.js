@@ -213,6 +213,8 @@ async function runTests() {
 
         const staffHist = await client.get(`/api/interview/history?userId=${ids.eve}`, auth(tokens.bob));
         assert(staffHist.status === 200 && staffHist.data.data.total === 1 && staffHist.data.data.items[0].userId === ids.eve, 'Recruiter can filter any candidate history');
+        assert(staffHist.data.data.items[0].candidate?.email === users.eve.email, 'Staff history includes the candidate name/email');
+        assert(!('candidate' in adaHist.data.data.items[0]), 'Candidate history does not include the candidate object');
         const page = await client.get('/api/interview/history?limit=1&offset=0', auth(tokens.ada));
         assert(page.data.data.items.length === 1 && page.data.data.limit === 1, 'Pagination via limit/offset');
 
