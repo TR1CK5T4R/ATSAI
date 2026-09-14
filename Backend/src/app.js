@@ -4,7 +4,7 @@
  * Middleware stack (in order):
  *   1. helmet        — secure HTTP headers
  *   2. cors          — cross-origin policy driven by CLIENT_URL env var
- *   3. express-rate-limit — 100 req / 15 min per IP (global), 10 req / 15 min on /api/auth
+ *   3. express-rate-limit — 100 req / 15 min per IP (global), 10 req / 15 min on login/register
  *   4. morgan        — HTTP request logging (dev only)
  *   5. express.json  — JSON body parsing (max 10 mb)
  *   6. urlencoded    — form data parsing
@@ -76,7 +76,9 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api', globalLimiter);
-app.use('/api/auth', authLimiter); // applied in addition to globalLimiter
+// Brute-force guard on credential endpoints only, under BOTH mounts (/api/auth and /auth).
+// Refresh/logout/me are excluded: the SPA refreshes silently on every page load.
+app.use(['/api/auth/login', '/api/auth/register', '/auth/login', '/auth/register'], authLimiter);
 
 // ── 4. HTTP request logger ────────────────────────────────────────────────────
 if (config.nodeEnv === 'development') {
