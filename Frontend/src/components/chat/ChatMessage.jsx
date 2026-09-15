@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 import { FiUser, FiCpu } from 'react-icons/fi';
 import clsx from 'clsx';

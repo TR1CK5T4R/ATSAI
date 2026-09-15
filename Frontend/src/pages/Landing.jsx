@@ -1,19 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { motion, useScroll, useTransform } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { FiArrowRight, FiCheck, FiCpu, FiTarget, FiTrendingUp } from 'react-icons/fi';
-import useLocomotiveScroll from '../hooks/useLocomotiveScroll';
+import Navbar from '../components/layout/Navbar';
+import { useAuthStore, selectIsAuthenticated } from '../store/useAuthStore';
 
 gsap.registerPlugin(ScrollTrigger);
 
 const Landing = () => {
-    // Initialize Locomotive Scroll
-    useLocomotiveScroll(true);
+    const isAuthenticated = useAuthStore(selectIsAuthenticated);
+    const ctaTo = isAuthenticated ? '/dashboard' : '/register';
 
     const containerRef = useRef(null);
-    const heroTextRef = useRef(null);
     const [typedText, setTypedText] = useState('');
     const fullText = "Next-Gen AI Interview Platform";
 
@@ -60,7 +60,9 @@ const Landing = () => {
     }, []);
 
     return (
-        <div id="main-container" ref={containerRef} data-scroll-container className="bg-background text-text overflow-hidden">
+        <div ref={containerRef} className="bg-background text-text overflow-hidden">
+            <Navbar />
+
 
             {/* 🔮 Background Elements */}
             <div className="fixed inset-0 pointer-events-none z-0">
@@ -69,40 +71,40 @@ const Landing = () => {
             </div>
 
             {/* 🚀 Hero Section */}
-            <section data-scroll-section className="relative h-screen flex flex-col items-center justify-center text-center px-6 z-10">
+            <section className="relative min-h-[calc(100svh-4rem)] flex flex-col items-center justify-center text-center px-4 sm:px-6 py-16 z-10">
                 <div className="hero-element mb-6 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-surface/50 border border-white/10 backdrop-blur-md">
                     <span className="w-2 h-2 rounded-full bg-secondary animate-ping" />
-                    <span className="text-sm font-medium text-secondary">AI Engine v2.0 Live</span>
+                    <span className="text-sm font-medium text-secondary">Real-time voice interviews</span>
                 </div>
 
-                <h1 className="hero-element text-5xl md:text-8xl font-black mb-6 tracking-tight">
+                <h1 className="hero-element text-4xl sm:text-6xl md:text-8xl font-black mb-6 tracking-tight">
                     <span className="bg-gradient-to-r from-white via-gray-200 to-gray-500 bg-clip-text text-transparent">
                         {typedText}
                     </span>
                     <span className="animate-blink text-primary">_</span>
                 </h1>
 
-                <p className="hero-element text-xl md:text-2xl text-muted max-w-2xl mb-10 leading-relaxed">
+                <p className="hero-element text-lg md:text-2xl text-muted max-w-2xl mb-10 leading-relaxed">
                     Master your technical interviews with real-time AI feedback,
                     adaptive questioning, and comprehensive skill analysis.
                 </p>
 
-                <div className="hero-element flex gap-4 flex-col md:flex-row">
-                    <Link to="/register" className="group relative px-8 py-4 bg-white text-black rounded-full font-bold text-lg overflow-hidden transition-transform hover:scale-105">
+                <div className="hero-element flex gap-4 flex-col sm:flex-row w-full sm:w-auto">
+                    <Link to={ctaTo} className="group relative px-8 py-4 bg-white text-black rounded-full font-bold text-lg overflow-hidden transition-transform hover:scale-105">
                         <span className="relative z-10 flex items-center gap-2">
-                            Start Interviewing <FiArrowRight />
+                            {isAuthenticated ? 'Go to dashboard' : 'Start interviewing'} <FiArrowRight />
                         </span>
                         <div className="absolute inset-0 bg-gradient-to-r from-primary to-accent opacity-0 group-hover:opacity-20 transition-opacity" />
                     </Link>
 
                     <a href="#demo" className="px-8 py-4 bg-surface/50 border border-white/10 rounded-full font-medium text-lg hover:bg-white/5 transition-colors backdrop-blur-sm">
-                        Watch Demo
+                        See how it works
                     </a>
                 </div>
             </section>
 
             {/* ⚡ How It Works */}
-            <section data-scroll-section className="py-32 px-6 relative z-10">
+            <section className="py-20 md:py-32 px-4 sm:px-6 relative z-10">
                 <div className="max-w-7xl mx-auto">
                     <div className="text-center mb-20">
                         <h2 className="text-4xl md:text-5xl font-bold mb-6">How It Works</h2>
@@ -142,7 +144,7 @@ const Landing = () => {
             </section>
 
             {/* 🤖 Interactive Demo Preview */}
-            <section id="demo" data-scroll-section className="py-32 px-6 bg-surface/20 relative z-10 overflow-hidden">
+            <section id="demo" className="py-20 md:py-32 px-4 sm:px-6 bg-surface/20 relative z-10 overflow-hidden">
                 <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center gap-16">
                     <div className="flex-1 space-y-8">
                         <h2 className="text-4xl md:text-5xl font-bold leading-tight">
@@ -209,21 +211,21 @@ const Landing = () => {
             </section>
 
             {/* 🚀 CTA Section */}
-            <section data-scroll-section className="py-32 px-6 text-center z-10 relative">
+            <section className="py-20 md:py-32 px-4 sm:px-6 text-center z-10 relative">
                 <div className="max-w-3xl mx-auto">
-                    <h2 className="text-5xl md:text-6xl font-black mb-8">Ready to get hired?</h2>
-                    <p className="text-xl text-muted mb-12">
-                        Join thousands of developers leveling up their careers with AI-powered preparation.
+                    <h2 className="text-4xl md:text-6xl font-black mb-8">Ready to get hired?</h2>
+                    <p className="text-lg md:text-xl text-muted mb-12">
+                        Practise with an AI interviewer and walk into your next interview prepared.
                     </p>
-                    <Link to="/register" className="inline-block px-12 py-5 bg-white text-black rounded-full font-bold text-xl hover:scale-105 transition-transform shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)]">
-                        Start Free Trial
+                    <Link to={ctaTo} className="inline-block px-8 py-4 md:px-12 md:py-5 bg-white text-black rounded-full font-bold text-lg md:text-xl hover:scale-105 transition-transform shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)]">
+                        Get started free
                     </Link>
                 </div>
             </section>
 
             {/* Footer */}
-            <footer data-scroll-section className="py-10 border-t border-white/5 text-center text-muted text-sm relative z-10 bg-background">
-                <p>© 2026 AI ATS Platform. All rights reserved.</p>
+            <footer className="py-10 border-t border-white/5 text-center text-muted text-sm relative z-10 bg-background">
+                <p>© {new Date().getFullYear()} AI ATS · Built by Tushar Singla</p>
             </footer>
         </div>
     );

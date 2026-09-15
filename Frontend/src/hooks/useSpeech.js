@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const useSpeech = (options = {}) => {
-    const { onSilence, silenceTimeout = 5000, onSpeakEnd } = options;
+    const { onSilence, silenceTimeout = 5000 } = options;
     const [isListening, setIsListening] = useState(false);
     const [transcript, setTranscript] = useState('');
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -45,6 +45,8 @@ const useSpeech = (options = {}) => {
     }, [isListening, transcript, onSilence, silenceTimeout]);
 
     useEffect(() => {
+        // Restarting the silence countdown on every transcript change is the point of this effect
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         resetSilenceTimer();
         return () => {
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -92,7 +94,7 @@ const useSpeech = (options = {}) => {
         setTranscript('');
         try {
             recognitionRef.current?.start();
-        } catch (e) {
+        } catch {
             // Already started
         }
     }, []);
@@ -100,7 +102,7 @@ const useSpeech = (options = {}) => {
     const stopListening = useCallback(() => {
         try {
             recognitionRef.current?.stop();
-        } catch (e) {
+        } catch {
             // Error stopping
         }
     }, []);
