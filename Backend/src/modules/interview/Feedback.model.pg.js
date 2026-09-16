@@ -57,6 +57,8 @@ const Feedback = sequelize.define(
         tableName: 'feedbacks',
         timestamps: true,
         underscored: true,
+        // One review per reviewer per interview — re-submitting updates it
+        indexes: [{ unique: true, fields: ['interview_id', 'reviewer_id'] }],
     }
 );
 
