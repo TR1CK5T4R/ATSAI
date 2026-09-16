@@ -48,4 +48,37 @@ src/
 - **Code splitting:** each route loads on demand, so gsap, recharts and confetti are only downloaded on the pages that use them.
 
 ## Voice interview
-`useSpeech` speaks each question and listens for the answer, auto-submitting after 5 s of silence. If the browser lacks SpeechRecognition (for example Firefox) or microphone access is denied, the interview switches to typed answers.
+**`hooks/useSpeech.js`** wraps the Web Speech API:
+| API | Behaviour |
+|-----|-----------|
+| `startListening()` | Continuous recognition with interim results. It **auto-stops after ~1.5 s of silence** once something has been said, then calls `onSilence(text)` |
+| `stopListening()` | Manual stop; does not call `onSilence` |
+| `speak(text)` | Uses `speechSynthesis` and returns a Promise that resolves when speaking ends. It stops the mic first so the AI never transcribes itself |
+| `isListening`, `isSpeaking`, `micPermission`, `error`, `isSupported` | State for the UI |
+
+**Browser quirks handled:**
+- Chrome ends continuous recognition sessions on its own; the hook restarts them and keeps the text so far.
+- Chrome cuts long utterances, so text is spoken in sentence chunks.
+- Some engines never fire `end`; a safety timer always settles `speak()`.
+- Voices load asynchronously, so the voice is picked at speak time.
+
+**Interview page turn loop:**
+1. The AI speaks the question.
+2. The mic auto-listens.
+3. After about 1.5 s of silence, the answer goes to `POST /interview/:id/answer`.
+4. The AI speaks the reply, and the loop repeats.
+
+**On screen:** the header shows a question counter and a colour-coded **latency indicator** (green up to 2 s, amber up to 4 s, red above). Each AI bubble shows its own latency. Clicking the mic while the AI is talking interrupts it.
+
+**Fallbacks:**
+- **No SpeechRecognition** (e.g. Firefox) or a denied microphone: the page switches to typed answers and explains why.
+- **Mic denied:** the mic button asks for permission again.
+- **Failed answer:** the message is kept and a Retry button appears.
+
+## Tests
+```bash
+npm test          # Vitest + jsdom + React Testing Library
+```
+`src/test/speechFakes.js` provides fake versions of `SpeechRecognition` and `speechSynthesis` that the tests drive step by step, since jsdom has neither.
+- **`useSpeech.test.jsx`:** silence timing, the automatic restart, interrupting the AI, chunking, the safety timer, and permission errors.
+- **`Interview.test.jsx`:** the full voice loop, the typing fallback, retrying a failed answer, finishing the interview, and an unsupported browser.

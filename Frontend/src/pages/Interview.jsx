@@ -1,91 +1,145 @@
 /**
  * Interview.jsx — Real-time voice mock interview
  *
- * Flow: start screen → POST /interview/create (8 tailored questions) → the AI
- * speaks each question (speechSynthesis) → the candidate answers by voice
- * (SpeechRecognition, auto-submit after silence) or by typing → POST /:id/answer
- * returns a follow-up or the next question → after the closing line, Finish
- * evaluates the transcript and opens the report.
+ * Turn loop:  AI speaks the question → mic auto-listens → ~1.5 s of silence
+ *             → answer sent to POST /interview/:id/answer → AI speaks the reply → …
+ * After the closing line the candidate ends the interview and gets the report.
  *
- * Browsers without SpeechRecognition (or a denied mic) fall back to typing.
+ * Fallbacks: no SpeechRecognition (e.g. Firefox), denied mic or a recognition
+ * error mid-session → typed answers (the AI still speaks if speechSynthesis exists).
+ * Clicking the mic while the AI talks interrupts it (barge-in).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiMic, FiMicOff, FiSend, FiPlayCircle, FiFlag, FiType } from 'react-icons/fi';
+import { FiMic, FiMicOff, FiSend, FiPlayCircle, FiFlag, FiAlertTriangle, FiRefreshCw, FiType } from 'react-icons/fi';
+import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { interviewApi } from '../api/interview.api';
 import { resumeApi } from '../api/resume.api';
-import useSpeech from '../hooks/useSpeech';
+import useSpeech, { SPEECH_SUPPORT } from '../hooks/useSpeech';
 import AIAvatar from '../components/chat/AIAvatar';
 import ChatMessage from '../components/chat/ChatMessage';
+import LatencyBadge from '../components/chat/LatencyBadge';
 import Button from '../components/ui/Button';
 import Spinner from '../components/ui/Spinner';
 
-const speechRecognitionSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+const SILENCE_MS = 1500;
+
+const TEXT_MODE_REASONS = {
+    unsupported: 'Voice input isn’t supported in this browser (try Chrome, Edge or Safari) — type your answers instead.',
+    denied: 'Microphone access was denied. Type your answers, or allow the mic in your browser settings and tap the mic button.',
+};
+
+let messageSeq = 0;
+const makeMessage = (role, content, extra = {}) => ({ id: ++messageSeq, role, content, timestamp: new Date(), ...extra });
+
+const MicButton = ({ listening, disabled, onClick, title }) => (
+    <div className="relative shrink-0">
+        {listening &&
+            [0, 0.6].map((delay) => (
+                <motion.span
+                    key={delay}
+                    className="absolute inset-0 rounded-full bg-danger/40"
+                    initial={{ scale: 1, opacity: 0.7 }}
+                    animate={{ scale: 1.9, opacity: 0 }}
+                    transition={{ duration: 1.2, repeat: Infinity, delay, ease: 'easeOut' }}
+                />
+            ))}
+        <button
+            onClick={onClick}
+            disabled={disabled}
+            title={title}
+            aria-label={title}
+            aria-pressed={listening}
+            className={clsx(
+                'relative w-12 h-12 rounded-full flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+                listening ? 'bg-danger text-white' : 'bg-white/10 text-text hover:bg-white/15'
+            )}
+        >
+            {listening ? <FiMicOff className="w-5 h-5" /> : <FiMic className="w-5 h-5" />}
+        </button>
+    </div>
+);
 
 const Interview = () => {
     const { state } = useLocation();
     const navigate = useNavigate();
 
-    const [interviewId, setInterviewId] = useState(null);
+    const [phase, setPhase] = useState('intro'); // intro | starting | live | done | finishing
     const [targetRole, setTargetRole] = useState('');
     const [progress, setProgress] = useState({ current: 1, total: 8 });
     const [messages, setMessages] = useState([]);
-    const [inputText, setInputText] = useState('');
-    const [phase, setPhase] = useState('intro'); // intro | starting | live | done | finishing
-    const [isLoading, setIsLoading] = useState(false);
-    const [voiceMode, setVoiceMode] = useState(false);
+    const [draft, setDraft] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [mode, setMode] = useState('voice'); // voice | text
+    const [textReason, setTextReason] = useState(null);
+    const [latency, setLatency] = useState(null); // { total, server }
+    const [failedAnswer, setFailedAnswer] = useState(null);
 
-    const bottomRef = useRef(null);
-    // Refs mirror state for the speech callbacks, which fire outside React's render cycle
-    const inputRef = useRef('');
-    const busyRef = useRef(false);
+    // Refs mirror state for speech callbacks, which fire outside React's render cycle
     const phaseRef = useRef(phase);
-    const voiceRef = useRef(false);
-    const sendRef = useRef(() => {});
+    const modeRef = useRef(mode);
+    const busyRef = useRef(false);
+    const idRef = useRef(null);
+    const submitRef = useRef(() => {});
+    const bottomRef = useRef(null);
 
-    useEffect(() => { inputRef.current = inputText; }, [inputText]);
-    useEffect(() => { busyRef.current = isLoading; }, [isLoading]);
-    useEffect(() => { phaseRef.current = phase; }, [phase]);
-    useEffect(() => { voiceRef.current = voiceMode; }, [voiceMode]);
+    const goTo = (next) => {
+        phaseRef.current = next;
+        setPhase(next);
+    };
+    const setInputMode = (next, reason = null) => {
+        modeRef.current = next;
+        setMode(next);
+        setTextReason(reason);
+    };
+    const setBusyBoth = (value) => {
+        busyRef.current = value;
+        setBusy(value);
+    };
 
     const speech = useSpeech({
-        silenceTimeout: 5000,
-        // Auto-submit after the candidate stops talking
-        onSilence: () => {
-            if (inputRef.current.trim() && !busyRef.current) sendRef.current();
-        },
-        // Listen again once the AI has finished speaking (not after the closing line)
-        onSpeakEnd: () => {
-            if (voiceRef.current && phaseRef.current === 'live') speech.startListening();
-        },
+        silenceMs: SILENCE_MS,
+        onTranscript: (text) => setDraft(text),
+        onSilence: (text) => submitRef.current(text),
     });
-    const { isListening, transcript, isSpeaking, silenceTimeLeft, setTranscript } = speech;
+    const { speak, startListening, stopListening, cancelSpeech } = speech;
+
+    const voiceActive = mode === 'voice' && !speech.error;
 
     useEffect(() => {
-        if (transcript) setInputText(transcript);
-    }, [transcript]);
+        bottomRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
+    }, [messages, busy]);
 
+    // Warn before a reload/close would abandon a running interview
     useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, isLoading]);
+        if (phase !== 'live' && phase !== 'done') return undefined;
+        const warn = (e) => {
+            e.preventDefault();
+            e.returnValue = '';
+        };
+        window.addEventListener('beforeunload', warn);
+        return () => window.removeEventListener('beforeunload', warn);
+    }, [phase]);
 
-    // Stop speech when leaving the page
-    useEffect(() => () => {
-        speech.stopListening();
-        speech.cancelSpeech();
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    /** Speak, then hand the floor back to the candidate (voice mode only) */
+    const speakThenListen = useCallback(
+        async (text) => {
+            await speak(text);
+            if (phaseRef.current === 'live' && modeRef.current === 'voice' && !busyRef.current) startListening();
+        },
+        [speak, startListening]
+    );
 
-    const addMessage = (role, content) => setMessages((prev) => [...prev, { role, content, timestamp: new Date() }]);
-
+    // ── Start ─────────────────────────────────────────────────────────────────
     const startInterview = async () => {
-        setPhase('starting');
-        // Voice needs both browser support and microphone permission; otherwise type
-        const voice = speechRecognitionSupported && (await speech.requestPermission());
-        setVoiceMode(voice);
-        if (!voice) toast('Voice input unavailable — you can type your answers', { icon: '⌨️' });
+        goTo('starting');
+
+        if (!SPEECH_SUPPORT.recognition) setInputMode('text', 'unsupported');
+        else if (await speech.requestMicPermission()) setInputMode('voice');
+        else setInputMode('text', 'denied');
 
         try {
             let resumeId = state?.resumeId;
@@ -100,83 +154,129 @@ const Interview = () => {
             }
 
             const { data } = await interviewApi.createInterview(resumeId);
-            setInterviewId(data.id);
+            idRef.current = data.id;
             setTargetRole(data.targetRole);
             setProgress({ current: data.questionNumber, total: data.totalQuestions });
-            addMessage('ai', data.question.text);
-            setPhase('live');
-            speech.speak(data.question.text);
+            setMessages([makeMessage('ai', data.question.text, { kind: 'question' })]);
+            goTo('live');
+            speakThenListen(data.question.text);
         } catch (err) {
             toast.error(err.message);
-            setPhase('intro');
+            goTo('intro');
         }
     };
 
-    const sendAnswer = useCallback(async () => {
-        const text = inputRef.current.trim();
-        if (!text || busyRef.current || !interviewId) return;
+    // ── Answer ────────────────────────────────────────────────────────────────
+    const submitAnswer = useCallback(
+        async (rawText) => {
+            const text = String(rawText ?? '').trim();
+            if (!text || busyRef.current || phaseRef.current !== 'live') return;
 
-        speech.stopListening();
-        addMessage('user', text);
-        setInputText('');
-        setTranscript('');
-        setIsLoading(true);
+            stopListening();
+            const userMessage = makeMessage('user', text);
+            setMessages((prev) => [...prev, userMessage]);
+            setDraft('');
+            setFailedAnswer(null);
+            setBusyBoth(true);
 
-        try {
-            const { data } = await interviewApi.submitAnswer(interviewId, text);
-            addMessage('ai', data.reply);
-            setProgress({ current: data.questionNumber, total: data.totalQuestions });
-            if (data.done) setPhase('done');
-            speech.speak(data.reply);
-        } catch (err) {
-            toast.error(err.message);
-            setInputText(text); // let the candidate retry without retyping
-        } finally {
-            setIsLoading(false);
-        }
-    }, [interviewId, speech, setTranscript]);
+            const startedAt = performance.now();
+            try {
+                const { data } = await interviewApi.submitAnswer(idRef.current, text);
+                const total = Math.round(performance.now() - startedAt);
+                setLatency({ total, server: data.latencyMs });
+                setMessages((prev) => [...prev, makeMessage('ai', data.reply, { kind: data.kind, latencyMs: total })]);
+                setProgress({ current: data.questionNumber, total: data.totalQuestions });
+                setBusyBoth(false);
 
-    useEffect(() => { sendRef.current = sendAnswer; }, [sendAnswer]);
+                if (data.done) {
+                    goTo('done');
+                    speak(data.reply);
+                } else {
+                    speakThenListen(data.reply);
+                }
+            } catch (err) {
+                setBusyBoth(false);
+                if (err.status === 409) {
+                    // Already answered/finished server-side — move to the end state
+                    toast(err.message);
+                    goTo('done');
+                    return;
+                }
+                // Undo the optimistic bubble and keep the text so nothing is lost
+                setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
+                setDraft(text);
+                setFailedAnswer(text);
+                toast.error(err.message);
+            }
+        },
+        [speak, speakThenListen, stopListening]
+    );
 
-    const finishInterview = async () => {
-        speech.stopListening();
-        speech.cancelSpeech();
-        const answered = messages.some((m) => m.role === 'user');
-        if (!answered) {
-            if (window.confirm('You haven\'t answered any questions. Leave without a report?')) navigate('/dashboard');
+    useEffect(() => {
+        submitRef.current = submitAnswer;
+    }, [submitAnswer]);
+
+    // ── Mic ───────────────────────────────────────────────────────────────────
+    const toggleMic = async () => {
+        if (mode === 'text' || speech.error) {
+            // Retry voice after the user fixed permissions / the network
+            if (!SPEECH_SUPPORT.recognition) return;
+            if (!(await speech.requestMicPermission())) return;
+            setInputMode('voice');
+            setDraft('');
+            startListening();
             return;
         }
-        setPhase('finishing');
+        if (speech.isListening) stopListening();
+        else startListening(); // also interrupts the AI if it is speaking
+    };
+
+    // ── End ───────────────────────────────────────────────────────────────────
+    const endInterview = async () => {
+        const answered = messages.some((m) => m.role === 'user');
+        if (!answered) {
+            if (!window.confirm("You haven't answered any questions yet. Leave without a report?")) return;
+            stopListening();
+            cancelSpeech();
+            navigate('/dashboard');
+            return;
+        }
+        if (phase !== 'done' && !window.confirm('End the interview now? Your report will be based on the answers so far.')) return;
+
+        stopListening();
+        cancelSpeech();
+        const previous = phaseRef.current;
+        goTo('finishing');
         try {
-            await interviewApi.finishInterview(interviewId);
+            await interviewApi.finishInterview(idRef.current);
             toast.success('Interview complete!');
-            navigate(`/results?id=${interviewId}`);
+            navigate(`/results?id=${idRef.current}`);
         } catch (err) {
             toast.error(err.message);
-            setPhase(progress.current >= progress.total ? 'done' : 'live');
+            goTo(previous);
         }
     };
 
-    const onKeyDown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendAnswer();
-        }
-    };
-
-    // ── Start screen ──────────────────────────────────────────────────────────
+    // ── Intro screen ──────────────────────────────────────────────────────────
     if (phase === 'intro' || phase === 'starting') {
         return (
             <div className="max-w-lg mx-auto">
                 <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="bg-surface border border-border rounded-2xl p-6 sm:p-8 text-center">
-                    <div className="w-16 h-16 bg-primary/15 text-primary rounded-2xl flex items-center justify-center mx-auto mb-6">
-                        <FiMic className="w-7 h-7" />
+                    <div className="mb-8 mt-2">
+                        <AIAvatar state={phase === 'starting' ? 'thinking' : 'idle'} />
                     </div>
                     <h1 className="text-2xl font-bold mb-3">Ready for your mock interview?</h1>
                     <p className="text-muted mb-2">8 questions tailored to your resume: technical, project-based and behavioral.</p>
-                    <p className="text-muted text-sm mb-8">
-                        Find a quiet spot and allow microphone access. You can also type your answers.
-                    </p>
+                    <ul className="text-sm text-muted text-left space-y-1.5 my-6 bg-white/[0.03] border border-border rounded-xl p-4">
+                        <li>• The interviewer speaks each question, then listens.</li>
+                        <li>• Pause for about {SILENCE_MS / 1000} seconds when you finish — your answer is sent automatically.</li>
+                        <li>• Tap the mic to interrupt or to stop listening; you can always type instead.</li>
+                    </ul>
+                    {!SPEECH_SUPPORT.recognition && (
+                        <p className="flex items-start gap-2 text-left text-sm text-warning bg-warning/10 border border-warning/20 rounded-xl p-3 mb-6">
+                            <FiType className="mt-0.5 shrink-0" /> {TEXT_MODE_REASONS.unsupported}
+                        </p>
+                    )}
                     <Button size="lg" className="w-full" onClick={startInterview} loading={phase === 'starting'}>
                         {phase === 'starting' ? 'Preparing your questions…' : <><FiPlayCircle /> Start interview</>}
                     </Button>
@@ -185,8 +285,11 @@ const Interview = () => {
         );
     }
 
-    // ── Live interview (full-screen, focused) ─────────────────────────────────
-    const inputDisabled = isLoading || phase !== 'live';
+    // ── Live interview (full-screen focus mode) ───────────────────────────────
+    const avatarState = busy ? 'thinking' : speech.isSpeaking ? 'speaking' : speech.isListening ? 'listening' : 'idle';
+    const questionNo = Math.min(progress.current, progress.total);
+    const canAnswer = phase === 'live' && !busy;
+    const banner = speech.error?.message || (mode === 'text' && TEXT_MODE_REASONS[textReason]);
 
     return (
         <div className="fixed inset-0 z-[100] bg-background flex flex-col">
@@ -198,45 +301,60 @@ const Interview = () => {
                 </div>
             )}
 
-            {/* Header */}
+            {/* Header: role, question counter, latency, end */}
             <header className="shrink-0 border-b border-border bg-background/80 backdrop-blur">
                 <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
                     <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium truncate">{targetRole || 'Mock interview'}</p>
                         <div className="flex items-center gap-2 mt-1">
-                            <div className="h-1.5 w-28 sm:w-40 rounded-full bg-white/10 overflow-hidden">
-                                <div className="h-full bg-primary transition-all" style={{ width: `${(Math.min(progress.current, progress.total) / progress.total) * 100}%` }} />
+                            <div className="h-1.5 w-24 sm:w-40 rounded-full bg-white/10 overflow-hidden" role="progressbar" aria-valuemin={1} aria-valuemax={progress.total} aria-valuenow={questionNo}>
+                                <div className="h-full bg-primary transition-all duration-500" style={{ width: `${(questionNo / progress.total) * 100}%` }} />
                             </div>
                             <span className="text-xs text-muted whitespace-nowrap">
-                                Question {Math.min(progress.current, progress.total)} of {progress.total}
+                                {phase === 'done' ? 'All questions answered' : `Question ${questionNo} of ${progress.total}`}
                             </span>
                         </div>
                     </div>
-                    <Button variant={phase === 'done' ? 'primary' : 'danger'} size="sm" onClick={finishInterview}>
-                        <FiFlag /> {phase === 'done' ? 'See report' : 'Finish'}
+                    {latency && (
+                        <div className="hidden sm:flex flex-col items-end text-xs leading-tight">
+                            <span className="text-muted">Last reply</span>
+                            <LatencyBadge ms={latency.total} title={`Round trip ${latency.total} ms · AI ${latency.server} ms`} />
+                        </div>
+                    )}
+                    <Button variant={phase === 'done' ? 'primary' : 'danger'} size="sm" onClick={endInterview}>
+                        <FiFlag /> {phase === 'done' ? 'See report' : 'End interview'}
                     </Button>
                 </div>
             </header>
 
             {/* Avatar */}
-            <div className="shrink-0 pt-6 pb-2">
-                <AIAvatar isSpeaking={isSpeaking} isThinking={isLoading} />
+            <div className="shrink-0 pt-6 pb-5 flex flex-col items-center gap-2">
+                <AIAvatar state={avatarState} size={88} />
+                {latency && (
+                    <span className="sm:hidden text-xs text-muted flex items-center gap-1 mt-3">
+                        Last reply <LatencyBadge ms={latency.total} compact />
+                    </span>
+                )}
             </div>
 
             {/* Transcript */}
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-3xl mx-auto px-4 py-4 flex flex-col">
                     <AnimatePresence initial={false}>
-                        {messages.map((msg, idx) => <ChatMessage key={idx} message={msg} />)}
+                        {messages.map((msg) => (
+                            <ChatMessage key={msg.id} message={msg} />
+                        ))}
                     </AnimatePresence>
-                    {isLoading && (
-                        <div className="flex items-center gap-2 text-muted text-sm ml-12 mb-6">
+                    {busy && (
+                        <div className="flex items-center gap-2 text-muted text-sm ml-11 mb-5">
                             <Spinner className="w-3.5 h-3.5" /> Interviewer is thinking…
                         </div>
                     )}
                     {phase === 'done' && (
-                        <div className="self-center mt-2 mb-6 text-center">
-                            <Button size="lg" onClick={finishInterview}><FiFlag /> Finish & see my report</Button>
+                        <div className="self-center mt-2 mb-6">
+                            <Button size="lg" onClick={endInterview}>
+                                <FiFlag /> Finish & see my report
+                            </Button>
                         </div>
                     )}
                     <div ref={bottomRef} />
@@ -245,45 +363,60 @@ const Interview = () => {
 
             {/* Composer */}
             <div className="shrink-0 border-t border-border bg-surface/80 backdrop-blur pb-[env(safe-area-inset-bottom)]">
-                <div className="max-w-3xl mx-auto px-4 py-3 relative">
-                    {isListening && inputText && !isLoading && (
-                        <div className="absolute -top-9 inset-x-0 flex justify-center pointer-events-none">
-                            <span className="bg-primary/15 border border-primary/30 text-primary text-xs px-3 py-1 rounded-full">
-                                Sending in {silenceTimeLeft}s…
-                            </span>
+                <div className="max-w-3xl mx-auto px-4 py-3 space-y-2">
+                    {banner && (
+                        <p className="flex items-start gap-2 text-xs text-warning bg-warning/10 border border-warning/20 rounded-lg px-3 py-2" role="status">
+                            <FiAlertTriangle className="mt-0.5 shrink-0" /> {banner}
+                        </p>
+                    )}
+                    {failedAnswer && !busy && (
+                        <div className="flex items-center justify-between gap-2 text-xs text-danger bg-danger/10 border border-danger/20 rounded-lg px-3 py-2">
+                            <span>Your answer wasn’t sent.</span>
+                            <Button variant="ghost" size="sm" onClick={() => submitAnswer(draft || failedAnswer)}>
+                                <FiRefreshCw /> Retry
+                            </Button>
                         </div>
                     )}
+                    {voiceActive && speech.isListening && (
+                        <p className="text-xs text-secondary text-center" aria-live="polite">
+                            Listening… pause for a moment to send
+                        </p>
+                    )}
+
                     <div className="flex items-end gap-2">
-                        {voiceMode ? (
-                            <button
-                                onClick={isListening ? speech.stopListening : speech.startListening}
-                                disabled={inputDisabled || isSpeaking}
-                                aria-label={isListening ? 'Stop listening' : 'Start listening'}
-                                className={`shrink-0 w-11 h-11 rounded-xl flex items-center justify-center transition-colors disabled:opacity-40 ${
-                                    isListening ? 'bg-danger/15 text-danger animate-pulse' : 'bg-white/5 text-muted hover:text-text'
-                                }`}
-                            >
-                                {isListening ? <FiMicOff /> : <FiMic />}
-                            </button>
-                        ) : (
-                            <span className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-white/5 text-muted" title="Typing mode">
-                                <FiType />
-                            </span>
-                        )}
-                        <textarea
-                            value={inputText}
-                            onChange={(e) => {
-                                setInputText(e.target.value);
-                                setTranscript(e.target.value);
-                            }}
-                            onKeyDown={onKeyDown}
-                            placeholder={phase === 'done' ? 'All questions answered' : voiceMode ? 'Speak or type your answer…' : 'Type your answer…'}
-                            aria-label="Your answer"
-                            rows={1}
-                            disabled={inputDisabled}
-                            className="flex-1 min-h-11 max-h-32 resize-none bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary/60 disabled:opacity-50"
+                        <MicButton
+                            listening={voiceActive && speech.isListening}
+                            disabled={!SPEECH_SUPPORT.recognition || !canAnswer}
+                            onClick={toggleMic}
+                            title={
+                                !SPEECH_SUPPORT.recognition
+                                    ? 'Voice input not supported in this browser'
+                                    : speech.isListening
+                                        ? 'Stop listening'
+                                        : speech.isSpeaking
+                                            ? 'Interrupt and answer'
+                                            : mode === 'text' || speech.error
+                                                ? 'Try voice input again'
+                                                : 'Start listening'
+                            }
                         />
-                        <Button className="shrink-0 w-11 px-0" onClick={sendAnswer} disabled={!inputText.trim() || inputDisabled} aria-label="Send answer">
+                        <textarea
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    submitAnswer(draft);
+                                }
+                            }}
+                            readOnly={voiceActive && speech.isListening}
+                            disabled={!canAnswer}
+                            rows={1}
+                            aria-label="Your answer"
+                            placeholder={phase === 'done' ? 'All questions answered' : voiceActive ? 'Speak, or type your answer…' : 'Type your answer…'}
+                            className="flex-1 min-h-12 max-h-32 resize-none bg-background border border-border rounded-xl px-3.5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/60 disabled:opacity-50"
+                        />
+                        <Button className="shrink-0 w-12 h-12 px-0" onClick={() => submitAnswer(draft)} disabled={!draft.trim() || !canAnswer} aria-label="Send answer">
                             <FiSend />
                         </Button>
                     </div>
