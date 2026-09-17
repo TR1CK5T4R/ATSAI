@@ -1,6 +1,7 @@
 /**
- * Results.jsx — Interview report: score, AI feedback, strengths/weaknesses,
- * skill breakdown and recommended courses.
+ * Results.jsx — Interview report: circular overall score, strengths-vs-gaps chart,
+ * written AI feedback, recommended courses with Buy buttons, and (staff only)
+ * reviewer feedback.
  *
  * Which interview: ?id=<interviewId> (shareable, used by Dashboard/Admin), else
  * router state from the Interview page, else the user's latest completed one.
@@ -10,13 +11,16 @@ import { useEffect, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { useWindowSize } from 'react-use';
 import Confetti from 'react-confetti';
-import { FiAward, FiPrinter, FiCheckCircle, FiAlertTriangle, FiBookOpen, FiTarget, FiMic } from 'react-icons/fi';
+import { FiAward, FiPrinter, FiCheckCircle, FiAlertTriangle, FiBookOpen, FiMic } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { interviewApi } from '../api/interview.api';
 import { coursesApi } from '../api/courses.api';
+import { useAuthStore } from '../store/useAuthStore';
+import useEnroll from '../hooks/useEnroll';
+import ReviewerFeedback from '../components/feedback/ReviewerFeedback';
+import { STAFF_ROLES } from '../constants/nav';
 import PageHeader from '../components/ui/PageHeader';
 import Card from '../components/ui/Card';
-import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import EmptyState from '../components/ui/EmptyState';
 import { PageLoader } from '../components/ui/Spinner';
@@ -46,6 +50,9 @@ const Results = () => {
     const [params] = useSearchParams();
     const { state } = useLocation();
     const { width, height } = useWindowSize();
+    const user = useAuthStore((s) => s.user);
+    const isStaff = STAFF_ROLES.includes(user.role);
+    const { enroll, enrollingId } = useEnroll();
 
     const [data, setData] = useState(undefined); // undefined = loading, null = nothing to show
     const [courses, setCourses] = useState([]);
@@ -121,7 +128,8 @@ const Results = () => {
         );
     }
 
-    const skills = (report.skillBreakdown || []).map(({ skill, score }) => ({ name: skill, score }));
+    const isOwner = interview.userId === user.id;
+    const hasSkills = report.skillBreakdown?.length > 0 || report.skillGaps?.length > 0;
 
     return (
         <div className="relative">
@@ -145,18 +153,8 @@ const Results = () => {
                     </Card>
 
                     <Card className="lg:col-span-2 bg-gradient-to-br from-surface to-primary/5">
-                        <h3 className="font-semibold mb-3">AI feedback</h3>
+                        <h3 className="font-semibold mb-3">Written feedback</h3>
                         <p className="text-text/90 leading-relaxed">{report.summary || 'No summary available.'}</p>
-                        {report.skillGaps?.length > 0 && (
-                            <div className="mt-6">
-                                <p className="flex items-center gap-2 text-sm font-semibold text-warning mb-2">
-                                    <FiTarget /> Skill gaps to work on
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                    {report.skillGaps.map((gap) => <Badge key={gap} tone="warning">{gap}</Badge>)}
-                                </div>
-                            </div>
-                        )}
                     </Card>
                 </div>
 
@@ -165,12 +163,15 @@ const Results = () => {
                     <ListCard title="Areas to improve" icon={FiAlertTriangle} tone="text-danger" items={report.weaknesses || []} empty="No weaknesses recorded." />
                 </div>
 
-                {skills.length > 0 && (
+                {hasSkills && (
                     <Card>
-                        <h3 className="font-semibold mb-4">Skill breakdown</h3>
-                        <SkillChart data={skills} />
+                        <h3 className="font-semibold mb-1">Strengths vs gaps</h3>
+                        <p className="text-sm text-muted mb-4">Per-skill scores from this interview against a target of 70.</p>
+                        <SkillChart skillBreakdown={report.skillBreakdown} skillGaps={report.skillGaps} />
                     </Card>
                 )}
+
+                {isStaff && <ReviewerFeedback interviewId={interview.id} />}
 
                 {courses.length > 0 && (
                     <section className="no-print">
@@ -179,7 +180,14 @@ const Results = () => {
                         </h3>
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                             {courses.map((rec, i) => (
-                                <CourseCard key={rec.course.id} course={rec.course} why={rec.why} index={i} />
+                                <CourseCard
+                                    key={rec.course.id}
+                                    course={rec.course}
+                                    why={rec.why}
+                                    index={i}
+                                    onEnroll={isOwner ? enroll : undefined}
+                                    enrolling={enrollingId === rec.course.id}
+                                />
                             ))}
                         </div>
                         <div className="mt-4">
