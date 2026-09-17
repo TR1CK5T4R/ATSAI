@@ -112,7 +112,16 @@ export const updateCandidateProfile = catchAsync(async (req, res) => {
     });
 });
 
+/**
+ * GET /users/candidates?q&limit&offset — recruiter/admin
+ */
+export const listCandidates = catchAsync(async (req, res) => {
+    const data = await usersService.listCandidates(req.query);
+    res.status(200).json({ success: true, data });
+});
+
 export default {
+    listCandidates,
     register,
     login,
     refreshToken,

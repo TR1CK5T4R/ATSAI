@@ -3,8 +3,9 @@
  */
 
 import jwt from 'jsonwebtoken';
-import { Op } from 'sequelize';
+import { Op, fn, col, literal } from 'sequelize';
 import User from './User.model.js';
+import Interview from '../interview/interview.model.pg.js';
 import ApiError from '../../utils/ApiError.js';
 import config from '../../config/env.js';
 
@@ -158,7 +159,83 @@ export const updateCandidateProfile = async (userId, updateData) => {
     return user;
 };
 
+/**
+ * Candidates with interview stats — recruiter/admin view (GET /users/candidates).
+ * One page of candidates, then one aggregate query + one "latest completed"
+ * query for just those ids (avoids N+1).
+ *
+ * @param {{ q?: string, limit: number, offset: number }} params
+ * @returns {Promise<{ total, limit, offset, items: Array }>}
+ */
+export const listCandidates = async ({ q, limit, offset }) => {
+    const where = { role: 'candidate' };
+    if (q) {
+        where[Op.or] = [{ name: { [Op.iLike]: `%${q}%` } }, { email: { [Op.iLike]: `%${q}%` } }];
+    }
+
+    const { count, rows } = await User.findAndCountAll({
+        where,
+        attributes: ['id', 'name', 'email', 'createdAt'],
+        order: [['createdAt', 'DESC']],
+        limit,
+        offset,
+    });
+    const ids = rows.map((u) => u.id);
+    if (!ids.length) return { total: count, limit, offset, items: [] };
+
+    const [stats, completed] = await Promise.all([
+        Interview.findAll({
+            where: { userId: ids },
+            attributes: [
+                ['user_id', 'userId'],
+                [fn('COUNT', col('id')), 'interviewCount'],
+                [fn('COUNT', literal("CASE WHEN status = 'completed' THEN 1 END")), 'completedCount'],
+                [fn('ROUND', fn('AVG', col('score'))), 'avgScore'],
+                [fn('MAX', col('score')), 'bestScore'],
+                [fn('MAX', col('created_at')), 'lastInterviewAt'],
+            ],
+            group: ['user_id'],
+            raw: true,
+        }),
+        Interview.findAll({
+            where: { userId: ids, status: 'completed' },
+            attributes: ['id', 'userId', 'score', 'targetRole', 'completedAt'],
+            order: [['completedAt', 'DESC']],
+        }),
+    ]);
+
+    const statsByUser = new Map(stats.map((s) => [s.userId, s]));
+    const latestByUser = new Map();
+    for (const i of completed) if (!latestByUser.has(i.userId)) latestByUser.set(i.userId, i);
+
+    const toInt = (v) => (v === null || v === undefined ? null : Number(v));
+    return {
+        total: count,
+        limit,
+        offset,
+        items: rows.map((u) => {
+            const s = statsByUser.get(u.id);
+            const latest = latestByUser.get(u.id);
+            return {
+                id: u.id,
+                name: u.name,
+                email: u.email,
+                joinedAt: u.createdAt,
+                interviewCount: toInt(s?.interviewCount) ?? 0,
+                completedCount: toInt(s?.completedCount) ?? 0,
+                avgScore: toInt(s?.avgScore),
+                bestScore: toInt(s?.bestScore),
+                lastInterviewAt: s?.lastInterviewAt ?? null,
+                latest: latest
+                    ? { interviewId: latest.id, score: latest.score, targetRole: latest.targetRole, completedAt: latest.completedAt }
+                    : null,
+            };
+        }),
+    };
+};
+
 export default {
+    listCandidates,
     generateAuthTokens,
     registerUser,
     loginUser,

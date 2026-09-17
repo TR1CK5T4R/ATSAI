@@ -11,7 +11,7 @@ This module provides user management, secure authentication, role-based authoriz
   - **Access Token**: Short-lived JWT (15 minutes expiry) passed via `Authorization: Bearer <token>`.
   - **Refresh Token**: Long-lived JWT (7 days expiry) stored securely in an `httpOnly`, `SameSite=Strict` cookie to prevent XSS attacks.
 - **Role-Based Access Control (RBAC)**:
-  - Supported roles: `candidate`, `recruiter`, `admin`.
+  - Supported roles: `candidate`, `recruiter`, `admin`. Self-registration allows only `candidate` and `recruiter`; create admins with `npm run create:admin`.
   - Granular middleware `authorizeRoles('candidate', 'recruiter', 'admin')`.
 - **Input Validation**: Robust Joi schema validation for all endpoints.
 - **Candidate Profiles**: Candidates can retrieve and update their profiles (`GET /candidate/profile`, `PUT /candidate/profile`).
@@ -60,3 +60,15 @@ src/modules/users/
 2. **Serialization**: `User.prototype.toJSON` automatically strips `passwordHash` to avoid leaking credentials.
 3. **Cookies**: `refreshToken` is configured with `httpOnly: true`, `secure: production`, and `sameSite: strict`.
 4. **Error Handling**: Uses `ApiError` to yield consistent JSON errors with correct HTTP status codes without leaking stack traces in production.
+
+## Recruiter: candidate list
+`GET /api/users/candidates?q=&limit=20&offset=0` (recruiter or admin). Returns every candidate with their interview stats:
+```json
+{ "id", "name", "email", "joinedAt", "interviewCount", "completedCount",
+  "avgScore", "bestScore", "lastInterviewAt",
+  "latest": { "interviewId", "score", "targetRole", "completedAt" } | null }
+```
+- **Search:** `q` matches name or email, ignoring case.
+- **No interviews:** candidates who haven't taken one are included, with `null` stats.
+- **Queries:** stats come from one aggregate query per page, so there is no per-row lookup.
+
