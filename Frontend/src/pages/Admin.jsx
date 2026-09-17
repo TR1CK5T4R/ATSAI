@@ -1,13 +1,14 @@
 /**
  * Admin.jsx — Staff console
- *  - Interviews tab (recruiter + admin): every candidate's interviews, filter, paginate, open report
+ *  - Candidates tab (recruiter + admin): candidates with scores; expand → interviews + leave feedback
+ *  - Interviews tab (recruiter + admin): every interview, filter, paginate, open report, leave feedback
  *  - Courses tab (admin only): create / edit / delete catalog courses
  * The backend enforces the same rules; the UI just hides what a role can't do.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { FiUsers, FiBookOpen, FiPlus, FiEdit2, FiTrash2, FiExternalLink, FiChevronLeft, FiChevronRight } from 'react-icons/fi';
+import { FiUsers, FiBookOpen, FiPlus, FiEdit2, FiTrash2, FiExternalLink, FiChevronLeft, FiChevronRight, FiList, FiMessageSquare } from 'react-icons/fi';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/useAuthStore';
@@ -21,6 +22,8 @@ import Field from '../components/ui/Field';
 import Modal from '../components/ui/Modal';
 import EmptyState from '../components/ui/EmptyState';
 import { PageLoader } from '../components/ui/Spinner';
+import CandidatesTab from '../components/admin/CandidatesTab';
+import FeedbackModal from '../components/feedback/FeedbackModal';
 import { formatDate, formatPrice, scoreTone, statusTone } from '../utils/format';
 
 const PAGE_SIZE = 20;
@@ -32,6 +35,8 @@ const InterviewsTab = () => {
     const [status, setStatus] = useState('');
     const [offset, setOffset] = useState(0);
     const [page, setPage] = useState(null);
+    const [reviewing, setReviewing] = useState(null);
+    const [reloadKey, setReloadKey] = useState(0);
 
     const changeFilter = (next) => {
         setPage(null);
@@ -47,7 +52,7 @@ const InterviewsTab = () => {
                 toast.error(err.message);
                 setPage({ total: 0, items: [] });
             });
-    }, [status, offset]);
+    }, [status, offset, reloadKey]);
 
     return (
         <Card className="p-0 sm:p-0 overflow-hidden">
@@ -94,7 +99,12 @@ const InterviewsTab = () => {
                                     <td className="px-4 py-3 text-muted whitespace-nowrap">{formatDate(i.createdAt)}</td>
                                     <td className="px-4 py-3 text-right">
                                         {i.status === 'completed' && (
-                                            <Button variant="ghost" size="sm" to={`/results?id=${i.id}`}>Report</Button>
+                                            <div className="flex justify-end gap-1">
+                                                <Button variant="ghost" size="sm" to={`/results?id=${i.id}`}>Report</Button>
+                                                <Button variant="ghost" size="sm" onClick={() => setReviewing(i)} aria-label="Leave feedback">
+                                                    <FiMessageSquare /> {i.feedbacks?.length || 0}
+                                                </Button>
+                                            </div>
                                         )}
                                     </td>
                                 </tr>
@@ -112,6 +122,16 @@ const InterviewsTab = () => {
                     <Button variant="secondary" size="sm" disabled={offset === 0} onClick={() => changeFilter({ offset: offset - PAGE_SIZE })} aria-label="Previous page"><FiChevronLeft /></Button>
                     <Button variant="secondary" size="sm" disabled={offset + PAGE_SIZE >= page.total} onClick={() => changeFilter({ offset: offset + PAGE_SIZE })} aria-label="Next page"><FiChevronRight /></Button>
                 </div>
+            )}
+            {reviewing && (
+                <FeedbackModal
+                    interview={reviewing}
+                    onClose={() => setReviewing(null)}
+                    onSaved={() => {
+                        setReviewing(null);
+                        setReloadKey((k) => k + 1);
+                    }}
+                />
             )}
         </Card>
     );
@@ -247,17 +267,18 @@ const CoursesTab = () => {
 const Admin = () => {
     const isAdmin = useAuthStore((s) => s.user.role === 'admin');
     const tabs = [
-        { id: 'interviews', label: 'Interviews', icon: FiUsers },
+        { id: 'candidates', label: 'Candidates', icon: FiUsers },
+        { id: 'interviews', label: 'Interviews', icon: FiList },
         ...(isAdmin ? [{ id: 'courses', label: 'Courses', icon: FiBookOpen }] : []),
     ];
-    const [tab, setTab] = useState('interviews');
+    const [tab, setTab] = useState('candidates');
 
     return (
         <>
-            <PageHeader title={isAdmin ? 'Admin' : 'Candidates'} description={isAdmin ? 'Review interviews and manage the course catalog.' : 'Review every candidate interview.'} />
+            <PageHeader title={isAdmin ? 'Admin' : 'Candidates'} description={isAdmin ? 'Review candidates, leave feedback and manage the course catalog.' : 'Review candidates and leave feedback on their interviews.'} />
 
             {tabs.length > 1 && (
-                <div className="flex gap-1 mb-6 border-b border-border" role="tablist">
+                <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto" role="tablist">
                     {tabs.map(({ id, label, icon: Icon }) => (
                         <button
                             key={id}
@@ -275,7 +296,9 @@ const Admin = () => {
                 </div>
             )}
 
-            {tab === 'interviews' ? <InterviewsTab /> : <CoursesTab />}
+            {tab === 'candidates' && <CandidatesTab />}
+            {tab === 'interviews' && <InterviewsTab />}
+            {tab === 'courses' && <CoursesTab />}
         </>
     );
 };

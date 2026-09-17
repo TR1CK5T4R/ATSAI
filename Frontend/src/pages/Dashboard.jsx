@@ -17,7 +17,7 @@ import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import EmptyState from '../components/ui/EmptyState';
 import { PageLoader } from '../components/ui/Spinner';
-import { formatDate, scoreTone, statusTone } from '../utils/format';
+import { formatDate, scoreTone } from '../utils/format';
 
 const average = (nums) => (nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length) : null);
 
@@ -38,22 +38,25 @@ const InterviewRow = ({ item, showCandidate }) => {
                 {showCandidate ? `${item.targetRole || 'Interview'} · ` : ''}{formatDate(item.createdAt)}
             </p>
         </div>
-        <Badge tone={statusTone(item.status)} className="capitalize hidden sm:inline-flex">{item.status}</Badge>
-        <Badge tone={scoreTone(item.score)}>{item.score ?? '—'}</Badge>
+        {item.status === 'completed' ? <Badge tone={scoreTone(item.score)}>{item.score ?? '—'}</Badge> : <Badge>Not finished</Badge>}
     </Wrapper>
     );
 };
 
+const PAGE = 10;
+
 const CandidateDashboard = ({ data }) => {
     const { resumes, resumeScore, interviews } = data;
+    const [visible, setVisible] = useState(PAGE);
     const completed = interviews.items.filter((i) => i.status === 'completed');
     const scores = completed.map((i) => i.score).filter((s) => s !== null);
+    const latestResume = resumes[0];
 
     const next = !resumes.length
         ? { title: 'Upload your resume', text: 'We parse it with AI and tailor every interview question to it.', to: '/resume', cta: 'Upload resume', icon: FiUpload }
         : !completed.length
-            ? { title: 'Take your first mock interview', text: '8 voice questions based on your resume — about 15 minutes.', to: '/interview', cta: 'Start interview', icon: FiMic }
-            : { title: 'See your latest report', text: 'Review your score, skill gaps and recommended courses.', to: `/results?id=${completed[0].id}`, cta: 'View results', icon: FiAward };
+            ? { title: 'Take your first mock interview', text: '8 voice questions based on your resume, about 15 minutes.', to: '/interview', cta: 'Start interview', icon: FiMic }
+            : { title: 'Practise again', text: 'Each interview gets new questions. Track how your score moves.', to: '/interview', cta: 'New interview', icon: FiMic };
 
     return (
         <div className="space-y-6">
@@ -64,26 +67,63 @@ const CandidateDashboard = ({ data }) => {
                 <StatCard label="Best score" value={scores.length ? Math.max(...scores) : '—'} icon={FiAward} tone="warning" />
             </div>
 
-            <Card className="flex flex-col sm:flex-row sm:items-center gap-5 bg-gradient-to-br from-surface to-primary/10 border-primary/20">
-                <div className="w-12 h-12 shrink-0 rounded-2xl bg-primary/15 text-primary flex items-center justify-center">
-                    <next.icon className="w-5 h-5" />
-                </div>
-                <div className="flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-primary">Next step</p>
-                    <h2 className="text-lg font-semibold mt-0.5">{next.title}</h2>
-                    <p className="text-sm text-muted">{next.text}</p>
-                </div>
-                <Button to={next.to}>
-                    {next.cta} <FiArrowRight />
-                </Button>
-            </Card>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card className="lg:col-span-2 flex flex-col sm:flex-row sm:items-center gap-5 bg-gradient-to-br from-surface to-primary/10 border-primary/20">
+                    <div className="w-12 h-12 shrink-0 rounded-2xl bg-primary/15 text-primary flex items-center justify-center">
+                        <next.icon className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-primary">Next step</p>
+                        <h2 className="text-lg font-semibold mt-0.5">{next.title}</h2>
+                        <p className="text-sm text-muted">{next.text}</p>
+                    </div>
+                    <Button to={next.to}>
+                        {next.cta} <FiArrowRight />
+                    </Button>
+                </Card>
+
+                {/* Upload-resume CTA: always available, so candidates can refresh their resume */}
+                <Card className="flex flex-col justify-between gap-4 border-dashed">
+                    <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 shrink-0 rounded-xl bg-white/5 text-muted flex items-center justify-center">
+                            <FiUpload />
+                        </div>
+                        <div>
+                            <h2 className="font-semibold">{latestResume ? 'Your resume' : 'No resume yet'}</h2>
+                            <p className="text-sm text-muted">
+                                {latestResume
+                                    ? `Uploaded ${formatDate(latestResume.createdAt)} · ${latestResume.skills?.length || 0} skills found`
+                                    : 'PDF or DOCX, up to 5 MB.'}
+                            </p>
+                        </div>
+                    </div>
+                    <Button variant={latestResume ? 'secondary' : 'primary'} to="/resume" className="w-full">
+                        <FiUpload /> {latestResume ? 'Update resume' : 'Upload resume'}
+                    </Button>
+                </Card>
+            </div>
 
             <Card>
-                <h2 className="font-semibold mb-2">Recent interviews</h2>
+                <div className="flex items-center justify-between mb-2">
+                    <h2 className="font-semibold">Interview history</h2>
+                    {interviews.total > 0 && <span className="text-xs text-muted">{interviews.total} total</span>}
+                </div>
                 {interviews.items.length ? (
-                    interviews.items.map((item) => <InterviewRow key={item.id} item={item} />)
+                    <>
+                        {interviews.items.slice(0, visible).map((item) => <InterviewRow key={item.id} item={item} />)}
+                        {visible < interviews.items.length && (
+                            <div className="pt-3 text-center">
+                                <Button variant="ghost" size="sm" onClick={() => setVisible((v) => v + PAGE)}>Show more</Button>
+                            </div>
+                        )}
+                    </>
                 ) : (
-                    <p className="text-sm text-muted py-6 text-center">No interviews yet.</p>
+                    <EmptyState
+                        icon={FiMic}
+                        title="No interviews yet"
+                        description={resumes.length ? 'Start your first mock interview to see it here.' : 'Upload your resume first, then start a mock interview.'}
+                        action={<Button to={resumes.length ? '/interview' : '/resume'}>{resumes.length ? 'Start interview' : 'Upload resume'}</Button>}
+                    />
                 )}
             </Card>
         </div>
@@ -129,7 +169,7 @@ const Dashboard = () => {
                     const [resumes, score, interviews] = await Promise.all([
                         resumeApi.getMyResume(),
                         resumeApi.getLatestScore(),
-                        interviewApi.getHistory({ limit: 10 }),
+                        interviewApi.getHistory({ limit: 50 }), // stats + history (shown 10 at a time)
                     ]);
                     if (!cancelled) setData({ resumes: resumes.data, resumeScore: score.score, interviews: interviews.data });
                 } else {
