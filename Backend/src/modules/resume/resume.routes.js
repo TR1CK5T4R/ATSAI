@@ -1,37 +1,31 @@
+/**
+ * resume.routes.js — REST endpoints for the resume module
+ *
+ *   POST /api/resume/upload       multipart/form-data (field: "resume") → parse + persist
+ *   GET  /api/resume/my           list the current user's resumes
+ *   GET  /api/resume/score/latest heuristic resume-strength score
+ *   GET  /api/resume/:id          single resume by UUID (owner or staff)
+ */
+
 import express from 'express';
-import multer from 'multer';
+import resumeUpload from './resume.upload.js';
 import resumeController from './resume.controller.js';
 import validation from './resume.validation.js';
+import { validate } from '../../middleware/validate.middleware.js';
 import { protect } from '../../middleware/auth.middleware.js';
-import ApiError from '../../utils/ApiError.js';
 
 const router = express.Router();
 
-// Multer Setup (Memory Storage)
-const storage = multer.memoryStorage();
-const upload = multer({
-    storage: storage,
-    limits: {
-        fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB default
-    },
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype === 'application/pdf') {
-            cb(null, true);
-        } else {
-            cb(new ApiError(400, 'Only PDF files are allowed'), false);
-        }
-    },
-});
+// ── Upload (multipart) ────────────────────────────────────────────────────────
+// Order matters: authenticate → multer (size/type gates) → controller pipeline
+router.post('/upload', protect, resumeUpload, resumeController.uploadResume);
 
-// Routes
-router.post(
-    '/upload',
-    protect,
-    upload.single('resume'),
-    resumeController.uploadResume
-);
-
+// ── List / score reads ────────────────────────────────────────────────────────
+// NOTE: declared BEFORE /:id so the UUID parameter route cannot shadow them
 router.get('/my', protect, resumeController.getMyResumes);
 router.get('/score/latest', protect, resumeController.getLatestScore);
+
+// ── Single resume by id ───────────────────────────────────────────────────────
+router.get('/:id', protect, validate(validation.getResume), resumeController.getResumeById);
 
 export default router;
