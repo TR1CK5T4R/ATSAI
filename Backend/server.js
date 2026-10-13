@@ -1,74 +1,99 @@
+/**
+ * server.js — Application entry point
+ *
+ * Boot sequence:
+ *   1. Load env vars (via config/env.js import chain)
+ *   2. Import Sequelize models index  → registers all models + associations
+ *   3. connectDB()   → authenticate + sync PostgreSQL
+ *   4. connectMongo() → connect MongoDB (non-fatal if MONGO_URI absent)
+ *   5. Create HTTP server from Express app
+ *   6. Attach Socket.io for real-time interview chat
+ *   7. Listen on PORT
+ *   8. Register graceful shutdown handlers
+ */
+
+import 'dotenv/config';                      // load .env first
+
+// Models must be imported BEFORE connectDB so Sequelize knows about them before sync
+import './src/models/index.js';
+
+import http from 'http';
+import { Server } from 'socket.io';
+
 import app from './src/app.js';
-import dotenv from 'dotenv';
+import config from './src/config/env.js';
 import { connectDB } from './src/config/database.js';
 import connectMongo from './src/config/mongo.js';
-import { Server } from 'socket.io';
-import http from 'http';
 
-dotenv.config();
-
+// ── Boot ──────────────────────────────────────────────────────────────────────
 const startServer = async () => {
-    // Connect to Databases
+    // ── 3. PostgreSQL ─────────────────────────────────────────────────────────
     await connectDB();
+
+    // ── 4. MongoDB ───────────────────────────────────────────────────────────
     await connectMongo();
 
-    const PORT = process.env.PORT || 3001;
-
-    // Create HTTP server from Express app
+    // ── 5. HTTP server ────────────────────────────────────────────────────────
     const server = http.createServer(app);
 
-    // Initialize Socket.io
+    // ── 6. Socket.io ─────────────────────────────────────────────────────────
     const io = new Server(server, {
         cors: {
-            origin: ["http://localhost:5173", "http://localhost:3000"],
-            methods: ["GET", "POST"],
-            credentials: true
-        }
+            origin: [config.clientUrl, 'http://localhost:5173', 'http://localhost:3000'],
+            methods: ['GET', 'POST'],
+            credentials: true,
+        },
     });
 
-    io.on('connection', (socket) => {
-        console.log('User connected:', socket.id);
+    // Make io available in request handlers via app.locals
+    app.locals.io = io;
 
-        socket.on('send_message', (data) => {
-            // Save to MongoDB here using a Message model
-            io.emit('receive_message', data);
+    io.on('connection', (socket) => {
+        console.log(`🔌 Socket connected: ${socket.id}`);
+
+        /** Join a private room for one interview session */
+        socket.on('join_interview', ({ interviewId }) => {
+            socket.join(`interview:${interviewId}`);
+            console.log(`Socket ${socket.id} joined room interview:${interviewId}`);
         });
 
         socket.on('disconnect', () => {
-            console.log('User disconnected');
+            console.log(`🔌 Socket disconnected: ${socket.id}`);
         });
     });
 
-    // Start server
-    server.listen(PORT, () => {
-        console.log(`🚀 Server running on port ${PORT}`);
+    // ── 7. Listen ─────────────────────────────────────────────────────────────
+    server.listen(config.port, () => {
+        console.log(`\n🚀 Server running on http://localhost:${config.port}`);
+        console.log(`   ENV: ${config.nodeEnv}`);
+        console.log(`   Health: http://localhost:${config.port}/health\n`);
     });
 
-    // Graceful Shutdown
-    const exitHandler = () => {
-        if (server) {
-            server.close(() => {
-                console.log('Server closed');
-                process.exit(1);
-            });
-        } else {
+    // ── 8. Graceful shutdown ──────────────────────────────────────────────────
+    const shutdown = (signal) => {
+        console.log(`\n${signal} received — shutting down gracefully...`);
+        server.close(() => {
+            console.log('HTTP server closed');
+            process.exit(0);
+        });
+        // Force exit after 10s if connections are still open
+        setTimeout(() => {
+            console.error('Force exit after timeout');
             process.exit(1);
-        }
+        }, 10_000);
     };
 
-    const unexpectedErrorHandler = (error) => {
-        console.error(error);
-        exitHandler();
-    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT',  () => shutdown('SIGINT'));
 
-    process.on('uncaughtException', unexpectedErrorHandler);
-    process.on('unhandledRejection', unexpectedErrorHandler);
+    process.on('uncaughtException', (err) => {
+        console.error('💥 uncaughtException:', err);
+        shutdown('uncaughtException');
+    });
 
-    process.on('SIGTERM', () => {
-        console.log('SIGTERM received');
-        if (server) {
-            server.close();
-        }
+    process.on('unhandledRejection', (reason) => {
+        console.error('💥 unhandledRejection:', reason);
+        shutdown('unhandledRejection');
     });
 };
 

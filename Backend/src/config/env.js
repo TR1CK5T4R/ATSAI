@@ -1,23 +1,47 @@
+/**
+ * env.js — Central environment configuration
+ * Validates all required env vars at startup and exports a typed config object.
+ * Import this instead of `process.env` directly throughout the app.
+ */
+
 import dotenv from 'dotenv';
 dotenv.config();
 
-const requiredEnvVars = [
-    'PORT',
-    'DATABASE_URL',
-    'JWT_SECRET'
-];
+// ── Required variables ────────────────────────────────────────────────────────
+const REQUIRED = ['PORT', 'DATABASE_URL', 'JWT_SECRET', 'GEMINI_API_KEY'];
 
-const missingVars = requiredEnvVars.filter((key) => !process.env[key]);
-
-if (missingVars.length > 0) {
-    console.error(`Missing required environment variables: ${missingVars.join(', ')}`);
+const missing = REQUIRED.filter((key) => !process.env[key]);
+if (missing.length > 0) {
+    console.error(`\n❌ Missing required environment variables: ${missing.join(', ')}\n`);
     process.exit(1);
 }
 
-export default {
-    port: process.env.PORT || 3001,
-    mongoUri: process.env.MONGO_URI || process.env.MONGO_URL,
-    postgresUri: process.env.DATABASE_URL || process.env.POSTGRES_URI,
+// ── Exported config object ────────────────────────────────────────────────────
+const config = {
+    // Server
+    port: parseInt(process.env.PORT, 10) || 3001,
+    nodeEnv: process.env.NODE_ENV || 'development',
+
+    // PostgreSQL
+    postgresUri: process.env.DATABASE_URL,
+    pgSsl: process.env.PG_SSL === 'true',           // set PG_SSL=true for cloud PG
+
+    // MongoDB
+    mongoUri: process.env.MONGO_URI || '',
+
+    // Auth
     jwtSecret: process.env.JWT_SECRET,
-    nodeEnv: process.env.NODE_ENV || 'development'
+    jwtExpire: process.env.JWT_EXPIRE || '7d',
+
+    // Gemini
+    geminiApiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+
+    // CORS
+    clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
+
+    // Upload
+    maxFileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 5 * 1024 * 1024, // 5 MB
 };
+
+export default config;
