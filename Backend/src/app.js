@@ -19,6 +19,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 
 import config from './config/env.js';
 import ApiError from './utils/ApiError.js';
@@ -28,6 +29,7 @@ import errorHandler from './middleware/error.middleware.js';
 import authRoutes     from './modules/auth/auth.routes.js';
 import resumeRoutes   from './modules/resume/resume.routes.js';
 import interviewRoutes from './modules/interview/interview.routes.js';
+import usersRoutes, { authRouter, candidateRouter } from './modules/users/users.routes.js';
 // courses routes added later; placeholder import is safe with an empty router
 // import coursesRoutes  from './modules/courses/courses.routes.js';
 
@@ -91,6 +93,9 @@ if (config.nodeEnv === 'development') {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// ── 6b. Cookie parser (for httpOnly refresh token cookie) ────────────────────
+app.use(cookieParser());
+
 // ── 7. Routes ─────────────────────────────────────────────────────────────────
 
 /**
@@ -106,8 +111,16 @@ app.get('/health', (_req, res) => {
     });
 });
 
-// API routes
-app.use('/api/auth',      authRoutes);
+// API & Root routes
+app.use('/api/auth',      authRouter);
+app.use('/auth',          authRouter);
+
+app.use('/api/candidate', candidateRouter);
+app.use('/candidate',     candidateRouter);
+
+app.use('/api/users',     usersRoutes);
+app.use('/users',         usersRoutes);
+
 app.use('/api/resume',    resumeRoutes);
 app.use('/api/interview', interviewRoutes);
 // app.use('/api/courses',   coursesRoutes); // uncomment when module is ready
