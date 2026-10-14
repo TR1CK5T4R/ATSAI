@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FiMic, FiMicOff, FiSend, FiXCircle, FiPlayCircle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { interviewApi } from '../api/interview.api'; 
+import { interviewApi } from '../api/interview.api';
+import { resumeApi } from '../api/resume.api';
 import useSpeech from '../hooks/useSpeech';
 import AIAvatar from '../components/chat/AIAvatar';
 import ChatMessage from '../components/chat/ChatMessage';
@@ -11,9 +12,10 @@ import ChatMessage from '../components/chat/ChatMessage';
 const Interview = () => {
     const { state } = useLocation();
     const navigate = useNavigate();
-    const roleApplied = state?.roleApplied || 'Senior Full Stack Developer';
+    const resumeIdFromState = state?.resumeId;
 
     const [sessionId, setSessionId] = useState(null);
+    const [targetRole, setTargetRole] = useState('');
     const [messages, setMessages] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [inputText, setInputText] = useState('');
@@ -39,16 +41,16 @@ const Interview = () => {
 
         try {
             const response = await interviewApi.submitAnswer(sessionId, userMsg.content);
-            const { nextQuestion, analysis } = response.data;
+            const { reply } = response.data;
 
             const aiMsg = {
                 role: 'ai',
-                content: nextQuestion,
+                content: reply,
                 timestamp: new Date()
             };
 
             setMessages(prev => [...prev, aiMsg]);
-            speak(nextQuestion);
+            speak(reply);
         } catch (error) {
             toast.error('Failed to get response');
             setIsLoading(false);
@@ -97,19 +99,32 @@ const Interview = () => {
         setHasStarted(true);
         try {
             setIsLoading(true);
-            const response = await interviewApi.startInterview(roleApplied);
-            const { sessionId: newSessionId, question } = response.data;
+            // Use the resume just uploaded, or fall back to the user's latest one
+            let resumeId = resumeIdFromState;
+            if (!resumeId) {
+                const mine = await resumeApi.getMyResume();
+                resumeId = mine.data?.[0]?.id;
+            }
+            if (!resumeId) {
+                toast.error('Upload your resume first');
+                navigate('/resume');
+                return;
+            }
+
+            const response = await interviewApi.createInterview(resumeId);
+            const { id: newSessionId, question, targetRole: role } = response.data;
 
             setSessionId(newSessionId);
+            setTargetRole(role);
 
             const initialMsg = {
                 role: 'ai',
-                content: question,
+                content: question.text,
                 timestamp: new Date()
             };
 
             setMessages([initialMsg]);
-            speak(question);
+            speak(question.text);
         } catch (error) {
             toast.error('Failed to start interview');
             navigate('/dashboard');
@@ -122,7 +137,7 @@ const Interview = () => {
         try {
             stopListening();
             if (sessionId) {
-                await interviewApi.completeInterview(sessionId);
+                await interviewApi.finishInterview(sessionId);
             }
             toast.success('Interview Completed!');
             navigate('/results', { state: { sessionId } });
@@ -152,7 +167,7 @@ const Interview = () => {
                     </div>
                     <h2 className="text-2xl font-bold mb-4">Ready to Start?</h2>
                     <p className="text-muted mb-8">
-                        The AI will conduct a voice interview for the role of <strong>{roleApplied}</strong>. 
+                        The AI will conduct a voice interview tailored to your resume. 
                         Please ensure you are in a quiet environment and grant microphone permissions when prompted.
                     </p>
                     <button
@@ -172,7 +187,7 @@ const Interview = () => {
             <div className="flex flex-col items-center justify-center py-6 border-b border-white/5 bg-background/50 backdrop-blur-sm z-10 shrink-0">
                 <AIAvatar isSpeaking={isSpeaking} isThinking={isLoading} />
                 <h2 className="text-sm font-medium text-muted tracking-wide">
-                    Interviewing for <span className="text-white">{roleApplied}</span>
+                    Interviewing for <span className="text-white">{targetRole || 'your role'}</span>
                 </h2>
                 <button
                     onClick={handleEndInterview}

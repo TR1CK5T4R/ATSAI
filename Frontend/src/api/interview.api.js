@@ -1,23 +1,32 @@
 import api from './axios';
 
 export const interviewApi = {
-    startInterview: async (roleApplied) => {
-        const response = await api.post('/interview/start', { roleApplied });
+    /** Generates 8 tailored questions from the resume and returns question 1 */
+    createInterview: async (resumeId, targetRole) => {
+        const response = await api.post('/interview/create', { resumeId, ...(targetRole ? { targetRole } : {}) });
         return response.data;
     },
 
-    submitAnswer: async (sessionId, answer) => {
-        const response = await api.post('/interview/answer', { sessionId, answer });
+    /** Returns { reply, kind, questionNumber, totalQuestions, done, latencyMs } */
+    submitAnswer: async (interviewId, text) => {
+        const response = await api.post(`/interview/${interviewId}/answer`, { text });
         return response.data;
     },
 
-    completeInterview: async (sessionId) => {
-        const response = await api.post('/interview/complete', { sessionId });
+    /** Returns { score, summary, strengths, weaknesses, skillGaps, skillBreakdown } */
+    finishInterview: async (interviewId) => {
+        const response = await api.post(`/interview/${interviewId}/finish`);
         return response.data;
     },
 
-    getSession: async (sessionId) => {
-        const response = await api.get(`/interview/${sessionId}`);
+    /** Returns { interview, report, transcript } */
+    getInterview: async (interviewId) => {
+        const response = await api.get(`/interview/${interviewId}`);
         return response.data;
-    }
+    },
+
+    getHistory: async (params = {}) => {
+        const response = await api.get('/interview/history', { params });
+        return response.data;
+    },
 };

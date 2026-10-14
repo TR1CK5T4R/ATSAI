@@ -42,32 +42,31 @@ const Results = () => {
 
                 // Fetch Interview Results if sessionId exists
                 if (sessionId) {
-                    const interviewData = await interviewApi.getSession(sessionId);
-                    if (interviewData.success && interviewData.data.log?.overallFeedback) {
-                        const feedback = interviewData.data.log.overallFeedback;
-                        
-                        // Map skill breakdown object to array format needed by chart
-                        const formattedSkills = Object.entries(feedback.skillBreakdown || {}).map(([name, score]) => ({
-                            name,
+                    const interviewData = await interviewApi.getInterview(sessionId);
+                    const report = interviewData.success ? interviewData.data.report : null;
+                    if (report) {
+                        // Chart expects [{ name, score }]
+                        const formattedSkills = (report.skillBreakdown || []).map(({ skill, score }) => ({
+                            name: skill,
                             score
                         }));
 
-                        // Map recommended courses from array of strings to array of objects
-                        const formattedCourses = (feedback.recommendedCourses || []).map(course => ({
-                            title: typeof course === 'string' ? course : course.title,
-                            description: typeof course === 'string' ? 'Recommended based on your interview performance.' : course.description
+                        // Until the courses module is live, show skill gaps as study topics
+                        const formattedCourses = (report.skillGaps || []).map(skill => ({
+                            title: skill,
+                            description: 'Skill gap identified in your interview.'
                         }));
 
                         setResults({
-                            finalScore: feedback.finalScore || 0,
-                            feedback: feedback.feedback || "Good effort overall.",
+                            finalScore: report.score || 0,
+                            feedback: report.summary || "Good effort overall.",
                             skillBreakdown: formattedSkills,
-                            strengths: feedback.strengths || [],
-                            weaknesses: feedback.weaknesses || [],
+                            strengths: report.strengths || [],
+                            weaknesses: report.weaknesses || [],
                             recommendedCourses: formattedCourses
                         });
 
-                        if (feedback.finalScore >= 80) {
+                        if (report.score >= 80) {
                             setShowConfetti(true);
                             setTimeout(() => setShowConfetti(false), 8000);
                         }
