@@ -10,40 +10,50 @@
 import Joi from 'joi';
 
 // ── Sub-schemas (unknown LLM fields are stripped, not passed through) ─────────
+// Gemini's responseSchema marks nested fields nullable, so null is coerced to ''
+// (Joi `.default()` only fills undefined; `.empty(null)` makes null count as unset).
+const optText = (max) => Joi.string().trim().max(max).truncate().allow('').empty(null).default('');
+
 const experienceItem = Joi.object({
-    title: Joi.string().trim().allow('').default(''),
-    company: Joi.string().trim().allow('').default(''),
-    startDate: Joi.string().trim().allow('').default(''),
-    endDate: Joi.string().trim().allow('').default(''),
-    description: Joi.string().trim().allow('').default(''),
+    title: optText(200),
+    company: optText(200),
+    startDate: optText(40),
+    endDate: optText(40),
+    description: optText(2000),
 });
 
 const educationItem = Joi.object({
-    degree: Joi.string().trim().allow('').default(''),
-    institution: Joi.string().trim().allow('').default(''),
-    year: Joi.string().trim().allow('').default(''),
+    degree: optText(200),
+    institution: optText(200),
+    year: optText(40),
 });
 
 const projectItem = Joi.object({
-    name: Joi.string().trim().allow('').default(''),
-    description: Joi.string().trim().allow('').default(''),
-    technologies: Joi.array().items(Joi.string().trim().max(60)).default([]),
+    name: optText(200),
+    description: optText(2000),
+    technologies: Joi.array().items(Joi.string().trim().max(60).truncate()).empty(null).default([]),
 });
+
+/** Allowed seniority buckets — kept in sync with the Gemini enum in resume.ai.js */
+const SENIORITY_LEVELS = ['Intern', 'Junior', 'Mid', 'Senior', 'Lead', 'Principal'];
 
 /**
  * Canonical shape of a parsed resume (mirrors the Gemini responseSchema in
  * resume.ai.js). Empty strings / empty arrays are VALID — real resumes are
  * messy, and hard-failing on a missing phone number would make parsing useless.
+ * Over-long strings are truncated rather than rejected for the same reason;
+ * structural problems (wrong types, unknown seniority) still fail → retry.
  */
 const RESUME_PARSED_SCHEMA = Joi.object({
-    name: Joi.string().trim().max(120).allow('').default(''),
-    email: Joi.string().email({ tlds: false }).allow('').default(''),
-    skills: Joi.array().items(Joi.string().trim().max(60)).default([]),
-    experience: Joi.array().items(experienceItem).default([]),
-    education: Joi.array().items(educationItem).default([]),
-    projects: Joi.array().items(projectItem).default([]),
-    experienceYears: Joi.number().min(0).max(60).default(0),
-    seniorityLevel: Joi.string().trim().max(40).allow('').default(''),
+    name: optText(120),
+    // An unparseable email (e.g. "name at gmail dot com") is blanked, not fatal
+    email: Joi.string().trim().lowercase().email({ tlds: false }).allow('').empty(null).default('').failover(''),
+    skills: Joi.array().items(Joi.string().trim().max(60).truncate()).empty(null).default([]),
+    experience: Joi.array().items(experienceItem).empty(null).default([]),
+    education: Joi.array().items(educationItem).empty(null).default([]),
+    projects: Joi.array().items(projectItem).empty(null).default([]),
+    experienceYears: Joi.number().min(0).max(60).empty(null).default(0),
+    seniorityLevel: Joi.string().trim().valid(...SENIORITY_LEVELS, '').empty(null).default(''),
 });
 
 /**
@@ -67,4 +77,4 @@ const uploadResume = {
 };
 
 export default { uploadResume, getResume, RESUME_PARSED_SCHEMA, validateParsedResume };
-export { validateParsedResume, RESUME_PARSED_SCHEMA };
+export { validateParsedResume, RESUME_PARSED_SCHEMA, SENIORITY_LEVELS };

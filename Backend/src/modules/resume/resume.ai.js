@@ -8,8 +8,9 @@
  *  2. VALIDATION: the returned JSON is re-validated/coerced with Joi
  *     (resume.validation.js → RESUME_PARSED_SCHEMA) — LLMs drift, schemas don't.
  *  3. RETRY: up to MAX_ATTEMPTS tries with exponential backoff + jitter.
- *     Retries cover transient API failures AND schema-validation failures
- *     (a retry with temperature 0.1 usually produces valid JSON).
+ *     Retries cover transient API failures (429/5xx/network) AND schema-validation
+ *     failures. Permanent errors (invalid key, unknown model, bad request) fail
+ *     fast — retrying them only adds latency.
  *  4. CLEAR ERROR: after the final attempt a descriptive ApiError(502) is
  *     thrown — we deliberately do NOT silently fall back to mock data for
  *     real API failures (unlike interview.ai.js), because a resume record
@@ -20,7 +21,7 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import config from '../../config/env.js';
 import ApiError from '../../utils/ApiError.js';
-import { validateParsedResume } from './resume.validation.js';
+import { validateParsedResume, SENIORITY_LEVELS } from './resume.validation.js';
 
 const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 750; // backoff: 750ms, 1500ms (+ jitter)
@@ -85,7 +86,11 @@ const RESUME_SCHEMA = {
             },
         },
         experienceYears: { type: SchemaType.NUMBER },
-        seniorityLevel: { type: SchemaType.STRING },
+        seniorityLevel: {
+            type: SchemaType.STRING,
+            format: 'enum',
+            enum: SENIORITY_LEVELS,
+        },
     },
     required: [
         'name',
@@ -108,7 +113,7 @@ Rules:
 - Use "" for unknown strings, 0 for unknown numbers, [] for unknown lists.
 - Normalise skills to their common industry names (e.g. "React.js" → "React", "Node JS" → "Node.js").
 - experienceYears: total professional experience in years (number, 1 decimal allowed).
-- seniorityLevel: best guess from ["Intern", "Junior", "Mid", "Senior", "Lead", "Principal"].
+- seniorityLevel: best guess from ${JSON.stringify(SENIORITY_LEVELS)}.
 - Do not invent data that is not implied by the resume text.
 
 RESUME TEXT:
@@ -142,6 +147,14 @@ const callGeminiOnce = async (resumeText) => {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Gemini fetch errors carry an HTTP `status`. 400/401/403/404 mean the key,
+ * model name or request is wrong — identical on every retry, so stop early.
+ * Everything else (429 quota, 5xx, network, bad JSON, schema drift) is retried.
+ */
+const PERMANENT_STATUSES = new Set([400, 401, 403, 404]);
+const isPermanentError = (err) => PERMANENT_STATUSES.has(err?.status);
 
 /**
  * Dev-only deterministic sample (used when GEMINI_MOCK=true).
@@ -220,7 +233,7 @@ const parseResumeWithGemini = async (resumeText) => {
         );
     }
 
-    const errors = [];
+    let lastError;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
@@ -234,9 +247,10 @@ const parseResumeWithGemini = async (resumeText) => {
             }
             return value;
         } catch (err) {
-            errors.push(`attempt ${attempt}: ${err.message}`);
+            lastError = err;
             console.warn(`⚠️  Gemini resume parse failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${err.message}`);
 
+            if (isPermanentError(err)) break;
             if (attempt < MAX_ATTEMPTS) {
                 // Exponential backoff + jitter avoids thundering-herd retries
                 await sleep(BASE_DELAY_MS * 2 ** (attempt - 1) + Math.random() * 250);
@@ -244,9 +258,16 @@ const parseResumeWithGemini = async (resumeText) => {
         }
     }
 
+    // Raw provider details stay in the server log above; the client gets a clear, safe message
+    if (isPermanentError(lastError)) {
+        throw new ApiError(
+            502,
+            `AI resume parsing is misconfigured (Gemini returned ${lastError.status}) — check GEMINI_API_KEY and GEMINI_MODEL.`
+        );
+    }
     throw new ApiError(
         502,
-        `AI resume parsing failed after ${MAX_ATTEMPTS} attempts — ${errors[errors.length - 1]}. Please try again shortly.`
+        `AI resume parsing failed after ${MAX_ATTEMPTS} attempts. Please try again shortly.`
     );
 };
 

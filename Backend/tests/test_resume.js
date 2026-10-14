@@ -11,7 +11,8 @@
  *   7. Ownership guard (403 for another candidate, 200 for recruiter)
  *   8. GET /resume/:id with unknown UUID → 404
  *   9. GET /resume/my lists the user's resumes
- *  10. LLM failure path: retries exhausted → clear 502 (no mock, no silent fallback)
+ *  10. LLM failure path: invalid key → fast, clear 502 (no mock, no silent fallback, no leaked provider details)
+ *  11. Parsed-JSON validation: nulls / bad email / long strings tolerated; wrong types & unknown seniority rejected
  *
  * Gemini runs in GEMINI_MOCK mode for sections 1–9 (deterministic, offline);
  * section 10 temporarily flips the config to exercise the real retry loop.
@@ -23,6 +24,7 @@ import { sequelize } from '../src/config/database.js';
 import User from '../src/modules/users/User.model.js';
 import Resume from '../src/modules/resume/resume.model.pg.js';
 import storage from '../src/services/storage/index.js';
+import { validateParsedResume } from '../src/modules/resume/resume.validation.js';
 import axios from 'axios';
 import fs from 'node:fs/promises';
 
@@ -257,24 +259,49 @@ async function runTests() {
         assert(notFoundRes.status === 404, 'GET with a valid but unknown UUID returns 404 Not Found');
 
         // ── 8. LLM failure path: retries then clear 502 ──────────────────────
-        logSection('8. LLM failure path (retry + clear error, no silent mock)');
+        logSection('8. LLM failure path (fail fast on bad key + clear error, no silent mock)');
         const savedMock = config.geminiMock;
         const savedKey = config.geminiApiKey;
         config.geminiMock = false;                          // force the real Gemini path
         config.geminiApiKey = 'invalid-key-for-retry-test'; // non-placeholder → passes the key guard
 
         try {
+            const startedAt = Date.now();
             const failRes = await client.post(
                 '/api/resume/upload',
                 fileForm(buildResumePdf(SAMPLE_RESUME_LINES), 'fail_resume.pdf', 'application/pdf'),
                 { headers: auth(candidateToken) }
             );
-            assert(failRes.status === 502, 'Upload fails with 502 when the AI provider rejects every attempt');
-            assert(/AI resume parsing failed after 3 attempts/i.test(failRes.data.message || ''), `Clear error after retries (got: "${failRes.data.message}")`);
+            const elapsedMs = Date.now() - startedAt;
+            assert(failRes.status === 502, 'Upload fails with 502 when the AI provider rejects the key');
+            assert(/misconfigured.*GEMINI_API_KEY/i.test(failRes.data.message || ''), `Clear, actionable error (got: "${failRes.data.message}")`);
+            assert(!/googleapis|API_KEY_INVALID/.test(failRes.data.message || ''), 'Raw provider error details are not leaked to the client');
+            assert(elapsedMs < 1500, `Permanent 4xx error is not retried with backoff (${elapsedMs} ms)`);
         } finally {
             config.geminiMock = savedMock;                  // restore
             config.geminiApiKey = savedKey;
         }
+
+        // ── 9. Parsed-JSON validation tolerates messy-but-usable LLM output ──
+        logSection('9. Parsed-JSON validation (nulls, bad email, long strings, seniority enum)');
+        const baseParsed = {
+            name: 'Priya Nair', email: 'priya@example.com', skills: ['React'], experience: [],
+            education: [], projects: [], experienceYears: 4, seniorityLevel: 'Senior',
+        };
+        const nullCase = validateParsedResume({
+            ...baseParsed,
+            experience: [{ title: 'Engineer', company: null, startDate: '2020', endDate: null, description: null }],
+        });
+        assert(!nullCase.error && nullCase.value.experience[0].company === '', 'Nullable nested fields are coerced to "" (not a retry-triggering failure)');
+        const emailCase = validateParsedResume({ ...baseParsed, email: 'priya at gmail dot com' });
+        assert(!emailCase.error && emailCase.value.email === '', 'Unparseable email is blanked instead of failing the whole parse');
+        const longSkill = 'x'.repeat(90);
+        const longCase = validateParsedResume({ ...baseParsed, skills: [longSkill] });
+        assert(!longCase.error && longCase.value.skills[0].length === 60, 'Over-long skill strings are truncated to 60 chars');
+        const badLevel = validateParsedResume({ ...baseParsed, seniorityLevel: 'Wizard' });
+        assert(Boolean(badLevel.error), 'Unknown seniorityLevel is rejected (triggers a retry)');
+        const badType = validateParsedResume({ ...baseParsed, skills: 'React, Node' });
+        assert(Boolean(badType.error), 'Structurally wrong output (skills as string) is rejected');
 
         console.log(`\n${colors.bold}${colors.green}=====================================================${colors.reset}`);
         console.log(`${colors.bold}${colors.green}   ALL TESTS PASSED: ${passedTests}/${totalTests} tests successful!          ${colors.reset}`);
