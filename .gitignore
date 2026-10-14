@@ -7,3 +7,6 @@ Frontend/.env
 !.env.example
 Backend/uploads/
 node_modules/
+
+# Logs
+*.log
