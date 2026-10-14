@@ -16,3 +16,4 @@ After you finish each logical unit of work (a feature, a bug fix, a config chang
 7. After committing, run `git push -u origin HEAD`. If push fails (non-fast-forward), run `git pull --rebase origin <branch>`, resolve any conflicts carefully, and push again. Never use `--force`.
 8. Never rewrite history (`reset --hard`, `rebase -i`, `commit --amend` on pushed commits) unless I explicitly ask.
 9. After each commit, reply with one line: the commit hash, message, and number of files changed.
+10. Author must always be Tushar Singla (the repo's git config). NEVER add `Co-Authored-By` trailers or any AI/Claude attribution to commits or PR descriptions.
