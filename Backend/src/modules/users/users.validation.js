@@ -23,8 +23,9 @@ export const registerSchema = {
             'string.max': 'Password cannot exceed 128 characters',
             'any.required': 'Password is required',
         }),
-        role: Joi.string().valid('candidate', 'recruiter', 'admin').default('candidate').messages({
-            'any.only': 'Role must be one of: candidate, recruiter, admin',
+        // 'admin' is deliberately NOT self-assignable — create admins with `npm run create:admin`
+        role: Joi.string().valid('candidate', 'recruiter').default('candidate').messages({
+            'any.only': 'Role must be one of: candidate, recruiter',
         }),
     }),
 };
