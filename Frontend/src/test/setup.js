@@ -11,6 +11,13 @@ window.webkitSpeechRecognition = FakeRecognition;
 window.SpeechSynthesisUtterance = FakeUtterance;
 window.speechSynthesis = createFakeSynth();
 
+// Recharts' ResponsiveContainer needs ResizeObserver, which jsdom lacks
+window.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+};
+
 beforeEach(() => {
     FakeRecognition.instances = [];
     window.speechSynthesis = createFakeSynth();

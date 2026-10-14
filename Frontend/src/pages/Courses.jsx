@@ -4,34 +4,26 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { FiSearch, FiBookOpen, FiZap } from 'react-icons/fi';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/useAuthStore';
 import { coursesApi } from '../api/courses.api';
 import { interviewApi } from '../api/interview.api';
+import useEnroll from '../hooks/useEnroll';
 import PageHeader from '../components/ui/PageHeader';
 import CourseCard from '../components/ui/CourseCard';
 import EmptyState from '../components/ui/EmptyState';
 import { PageLoader } from '../components/ui/Spinner';
 import { inputClass } from '../components/ui/Field';
 
-/** The mock provider links to our own /checkout/mock route; real providers link off-site */
-const openPaymentLink = (link, navigate) => {
-    const url = new URL(link, window.location.origin);
-    if (url.origin === window.location.origin) navigate(url.pathname + url.search);
-    else window.location.assign(url.toString());
-};
-
 const Courses = () => {
     const user = useAuthStore((s) => s.user);
-    const navigate = useNavigate();
     const [courses, setCourses] = useState(null);
     const [recommended, setRecommended] = useState([]);
     const [query, setQuery] = useState('');
     const [tag, setTag] = useState('All');
-    const [enrollingId, setEnrollingId] = useState(null);
+    const { enroll: handleEnroll, enrollingId } = useEnroll();
 
     useEffect(() => {
         coursesApi
@@ -61,18 +53,6 @@ const Courses = () => {
                 (!q || c.title.toLowerCase().includes(q) || c.skillTag.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q))
         );
     }, [courses, query, tag]);
-
-    const handleEnroll = async (course) => {
-        setEnrollingId(course.id);
-        try {
-            const { data } = await coursesApi.checkout(course.id);
-            openPaymentLink(data.paymentLink, navigate);
-        } catch (err) {
-            toast.error(err.message);
-        } finally {
-            setEnrollingId(null);
-        }
-    };
 
     if (courses === null) return <PageLoader />;
 
