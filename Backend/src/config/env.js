@@ -50,6 +50,9 @@ const config = {
     // CORS
     clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
 
+    // Payments — 'mock' until a real provider (razorpay | stripe) is plugged into services/payments
+    paymentProvider: process.env.PAYMENT_PROVIDER || 'mock',
+
     // Upload / file storage
     maxFileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 5 * 1024 * 1024, // 5 MB
     storageDriver: process.env.STORAGE_DRIVER || 'local',                     // local | s3 | cloudinary
