@@ -21,6 +21,7 @@ import Interview from './interview.model.pg.js';
 import InterviewChat from './InterviewChat.model.mongo.js';
 import Resume from '../resume/resume.model.pg.js';
 import User from '../users/User.model.js';
+import Feedback from './Feedback.model.pg.js';
 import ai, { QUESTION_COUNT } from './interview.ai.js';
 import ApiError from '../../utils/ApiError.js';
 
@@ -330,8 +331,18 @@ const getHistory = async (user, { limit, offset, status, userId }) => {
     const { count, rows } = await Interview.findAndCountAll({
         where,
         attributes: { exclude: ['questions'] },
-        // Staff views list many candidates — include who each interview belongs to
-        include: isStaff(user) ? [{ model: User, as: 'candidate', attributes: ['id', 'name', 'email'] }] : [],
+        // Staff views list many candidates — include who each interview belongs to and reviewer feedback
+        include: isStaff(user)
+            ? [
+                { model: User, as: 'candidate', attributes: ['id', 'name', 'email'] },
+                {
+                    model: Feedback,
+                    as: 'feedbacks',
+                    attributes: ['id', 'rating', 'comments', 'reviewerId', 'updatedAt'],
+                    include: [{ model: User, as: 'reviewer', attributes: ['id', 'name'] }],
+                },
+            ]
+            : [],
         distinct: true,
         order: [['createdAt', 'DESC']],
         limit,

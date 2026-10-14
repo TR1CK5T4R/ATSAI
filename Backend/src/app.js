@@ -29,6 +29,7 @@ import resumeRoutes   from './modules/resume/resume.routes.js';
 import interviewRoutes from './modules/interview/interview.routes.js';
 import usersRoutes, { authRouter, candidateRouter } from './modules/users/users.routes.js';
 import coursesRoutes  from './modules/courses/courses.routes.js';
+import feedbackRoutes from './modules/interview/feedback.routes.js';
 
 const app = express();
 
@@ -127,6 +128,7 @@ app.use('/users',         usersRoutes);
 app.use('/api/resume',    resumeRoutes);
 app.use('/api/interview', interviewRoutes);
 app.use('/api/courses',   coursesRoutes);
+app.use('/api/feedback',  feedbackRoutes);
 
 // Root sanity check
 app.get('/', (_req, res) => {

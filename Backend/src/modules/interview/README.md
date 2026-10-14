@@ -20,6 +20,16 @@ finish ──► Gemini (GEMINI_MODEL) evaluates the full transcript → score, 
 
 Recruiters and admins can **read** any interview but can never answer or finish one.
 
+## Reviewer feedback (recruiter / admin)
+Human ratings, separate from the AI report. The code is in `feedback.{routes,controller,service,validation}.js` and the `Feedback` model.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| POST | `/api/feedback/add` | `{ interviewId, rating 1–5, comments? }`. Only for **completed** interviews (otherwise 409). There is one entry per reviewer per interview: sending again **updates** it (200), the first time returns 201 |
+| GET | `/api/feedback/interview/:interviewId` | All reviewers' feedback, newest first, with reviewer names |
+
+Reviewer feedback is **staff-only**; candidates never see recruiters' notes. When staff call `GET /api/interview/history`, each interview also includes its `feedbacks`.
+
 ## How a turn works
 - **Question plan:** the 8 questions are 3 technical, 3 project-based and 2 behavioral, tailored to the resume. They are stored in `interviews.questions`. The prompt receives a resume summary **without name, email or phone**.
 - **Follow-ups:** after each answer, the fast model either asks one follow-up (max 2 sentences) or moves on. The server allows **at most 1 follow-up per question**, so an interview has between 8 and 16 AI turns.
