@@ -5,6 +5,7 @@
  *   GET  /api/resume/my           list the current user's resumes
  *   GET  /api/resume/score/latest heuristic resume-strength score
  *   GET  /api/resume/:id          single resume by UUID (owner or staff)
+ *   GET  /api/resume/:id/file     download the original file (owner or staff)
  */
 
 import express from 'express';
@@ -27,5 +28,6 @@ router.get('/score/latest', protect, resumeController.getLatestScore);
 
 // ── Single resume by id ───────────────────────────────────────────────────────
 router.get('/:id', protect, validate(validation.getResume), resumeController.getResumeById);
+router.get('/:id/file', protect, validate(validation.getResume), resumeController.downloadResumeFile);
 
 export default router;

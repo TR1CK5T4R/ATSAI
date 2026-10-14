@@ -4,7 +4,8 @@
  * Fields:
  *   id               UUID PK
  *   userId           FK → users.id
- *   fileUrl          STRING  — path/URL to uploaded PDF
+ *   fileUrl          STRING  — authenticated download URL (/api/resume/:id/file)
+ *   fileKey          STRING  — storage-driver key (never sent to clients)
  *   parsedJson       JSONB   — full Gemini-parsed resume object
  *   skills           ARRAY   — extracted skill tags (e.g. ['React','Node'])
  *   experienceYears  FLOAT   — total years of experience detected
@@ -36,7 +37,13 @@ const Resume = sequelize.define(
             type: DataTypes.STRING(2048),
             allowNull: true, // null when uploaded as raw text (no file storage)
             field: 'file_url',
-            comment: 'Relative or absolute URL to the stored PDF file',
+            comment: 'Authenticated download URL for the stored resume file',
+        },
+        fileKey: {
+            type: DataTypes.STRING(512),
+            allowNull: true,
+            field: 'file_key',
+            comment: 'Storage-driver key (local path / S3 object key) — internal only',
         },
         parsedJson: {
             type: DataTypes.JSONB,   // JSONB gives indexable JSON in Postgres
@@ -64,5 +71,12 @@ const Resume = sequelize.define(
         underscored: true,
     }
 );
+
+/** Never leak the internal storage key in JSON responses */
+Resume.prototype.toJSON = function toJSON() {
+    const values = { ...this.get() };
+    delete values.fileKey;
+    return values;
+};
 
 export default Resume;

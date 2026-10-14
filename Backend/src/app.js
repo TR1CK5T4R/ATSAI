@@ -95,10 +95,9 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // ── 6b. Cookie parser (for httpOnly refresh token cookie) ────────────────────
 app.use(cookieParser());
 
-// ── 6c. Serve locally-stored uploads (storage abstraction 'local' driver) ─────
-// fileUrl values point at /uploads/... — this line becomes unnecessary once
-// STORAGE_DRIVER moves to S3/Cloudinary and file URLs are CDN links instead.
-app.use('/uploads', express.static(config.uploadDirAbs));
+// ── 6c. Uploaded files are NOT served statically ──────────────────────────────
+// Resumes contain personal data, so they are only downloadable through
+// GET /api/resume/:id/file (login + ownership check → storage.getFile).
 
 // ── 7. Routes ─────────────────────────────────────────────────────────────────
 

@@ -2,14 +2,15 @@
  * localDisk.storage.js — Local filesystem driver for the storage abstraction.
  *
  * Writes uploads to <Backend root>/<UPLOAD_DIR>/<yyyy-mm>/<uuid>.<ext>
- * (default: Backend/uploads) and returns a key + public URL.
+ * (default: Backend/uploads) and returns a storage key.
  *
- * The publicUrl is served by express.static in app.js. When this driver is
- * swapped for S3/Cloudinary, only `publicUrl` changes (CDN URL) — callers
- * never touch filesystem paths directly.
+ * Files are private: nothing serves the upload dir statically. Callers read
+ * them back with getFile(key) behind their own auth checks, and never touch
+ * filesystem paths directly.
  */
 
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import config from '../../config/env.js';
@@ -54,7 +55,7 @@ const resolveKey = (key) => {
 /**
  * Persist a file buffer.
  * @param {{ buffer: Buffer, originalName: string, mimeType: string }} input
- * @returns {Promise<{ key: string, absolutePath: string, publicUrl: string, size: number, driver: string }>}
+ * @returns {Promise<{ key: string, absolutePath: string, size: number, driver: string }>}
  */
 const saveFile = async ({ buffer, originalName, mimeType }) => {
     await ensureStorageReady();
@@ -74,7 +75,6 @@ const saveFile = async ({ buffer, originalName, mimeType }) => {
     return {
         key,
         absolutePath,
-        publicUrl: `/uploads/${key}`, // served by express.static('/uploads') in app.js
         size: buffer.length,
         driver: 'local',
     };
@@ -95,4 +95,21 @@ const deleteFile = async (key) => {
     }
 };
 
-export default { saveFile, deleteFile, ensureStorageReady };
+/**
+ * Open a stored file for streaming (used by authenticated download routes).
+ * @param {string} key
+ * @returns {Promise<{ stream: import('node:stream').Readable, size: number }>}
+ * @throws ApiError 404 when the file no longer exists
+ */
+const getFile = async (key) => {
+    const absolutePath = resolveKey(key);
+    try {
+        const { size } = await fs.stat(absolutePath);
+        return { stream: createReadStream(absolutePath), size };
+    } catch (err) {
+        if (err.code === 'ENOENT') throw new ApiError(404, 'Stored file not found');
+        throw err;
+    }
+};
+
+export default { saveFile, deleteFile, getFile, ensureStorageReady };

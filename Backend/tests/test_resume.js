@@ -7,7 +7,7 @@
  *   3. Size guard (413 for files over 5 MB)
  *   4. POST /resume/upload happy path (mock Gemini): 201 + strict parsed JSON
  *   5. GET /resume/:id (owner) returns the persisted parsedJson
- *   6. Uploaded file is actually served from /uploads (storage driver)
+ *   6. Uploaded file downloads only via the authenticated /:id/file route (no public /uploads)
  *   7. Ownership guard (403 for another candidate, 200 for recruiter)
  *   8. GET /resume/:id with unknown UUID → 404
  *   9. GET /resume/my lists the user's resumes
@@ -125,6 +125,8 @@ async function runTests() {
     // Ensure database connection
     await sequelize.authenticate();
     console.log(`${colors.green}✔ Connected to PostgreSQL database${colors.reset}`);
+    // Apply new Resume columns (e.g. file_key) — the dev server does the same via sync({ alter: true })
+    await Resume.sync({ alter: true });
 
     // Start ephemeral test server
     const server = app.listen(0);
@@ -214,7 +216,7 @@ async function runTests() {
 
         const uploadData = uploadRes.data.data;
         assert(!!uploadData?.id, 'Returns the new resume id');
-        assert(typeof uploadData.fileUrl === 'string' && uploadData.fileUrl.startsWith('/uploads/'), `fileUrl points into local storage (${uploadData.fileUrl})`);
+        assert(uploadData.fileUrl === `/api/resume/${uploadData.id}/file`, `fileUrl is the authenticated download route (${uploadData.fileUrl})`);
 
         const structured = uploadData.structured;
         assert(structured && typeof structured === 'object', 'Returns structured parsed JSON');
@@ -230,28 +232,46 @@ async function runTests() {
         const resumeId = uploadData.id;
 
         // ── 5. GET /:id + file serving + GET /my ─────────────────────────────
-        logSection('5. GET /api/resume/:id, stored file serving, GET /my');
+        logSection('5. GET /api/resume/:id, authenticated file download, GET /my');
         const getRes = await client.get(`/api/resume/${resumeId}`, { headers: auth(candidateToken) });
         assert(getRes.status === 200, 'GET /resume/:id as owner returns 200');
         assert(getRes.data.data.id === resumeId, 'GET returns the requested resume id');
         assert(getRes.data.data.parsedJson?.name === 'Aarav Sharma', 'Persisted parsedJson matches the upload response');
         assert(getRes.data.data.fileUrl === uploadData.fileUrl, 'Persisted fileUrl matches the upload response');
 
-        const fileRes = await client.get(uploadData.fileUrl);
-        assert(fileRes.status === 200, `Stored file is served at ${uploadData.fileUrl} (express.static)`);
-        assert(fileRes.data.length === pdfBuffer.length, 'Served file byte-length matches the uploaded PDF');
+        assert(!('fileKey' in getRes.data.data), 'Internal storage key (fileKey) is not exposed in the API response');
+
+        const binary = { responseType: 'arraybuffer' };
+        const fileRes = await client.get(uploadData.fileUrl, { ...binary, headers: auth(candidateToken) });
+        assert(fileRes.status === 200, `Owner can download the file from ${uploadData.fileUrl}`);
+        assert(Buffer.from(fileRes.data).equals(pdfBuffer), 'Downloaded bytes match the uploaded PDF exactly');
+        assert(fileRes.headers['content-type'] === 'application/pdf', 'Download has Content-Type application/pdf');
+        assert(/attachment; filename="resume-[0-9a-f-]+\.pdf"/.test(fileRes.headers['content-disposition'] || ''), 'Download is sent as an attachment with a safe filename');
+        assert(/no-store/.test(fileRes.headers['cache-control'] || ''), 'Download is marked Cache-Control: no-store');
+
+        const anonFileRes = await client.get(uploadData.fileUrl, binary);
+        assert(anonFileRes.status === 401, 'Download without a token returns 401');
+
+        const { fileKey } = await Resume.findByPk(resumeId);
+        const publicRes = await client.get(`/uploads/${fileKey}`, binary);
+        assert(publicRes.status === 404, 'Stored file is NOT publicly reachable under /uploads');
 
         const myRes = await client.get('/api/resume/my', { headers: auth(candidateToken) });
         assert(myRes.status === 200 && myRes.data.count >= 1, `GET /resume/my lists ${myRes.data.count} resume(s) for the owner`);
         assert(myRes.data.data.some((r) => r.id === resumeId), 'GET /resume/my includes the uploaded resume');
 
         // ── 6. Ownership guard ───────────────────────────────────────────────
-        logSection('6. Ownership guard on GET /:id');
+        logSection('6. Ownership guard on GET /:id and GET /:id/file');
         const forbiddenRes = await client.get(`/api/resume/${resumeId}`, { headers: auth(candidate2Token) });
         assert(forbiddenRes.status === 403, 'Another candidate gets 403 Forbidden for a foreign resume');
 
         const recruiterRes = await client.get(`/api/resume/${resumeId}`, { headers: auth(recruiterToken) });
         assert(recruiterRes.status === 200, 'Recruiter (staff role) may read any resume');
+
+        const forbiddenFileRes = await client.get(`/api/resume/${resumeId}/file`, { responseType: 'arraybuffer', headers: auth(candidate2Token) });
+        assert(forbiddenFileRes.status === 403, 'Another candidate gets 403 when downloading a foreign resume file');
+        const recruiterFileRes = await client.get(`/api/resume/${resumeId}/file`, { responseType: 'arraybuffer', headers: auth(recruiterToken) });
+        assert(recruiterFileRes.status === 200, 'Recruiter may download any resume file');
 
         // ── 7. Unknown id ────────────────────────────────────────────────────
         logSection('7. Unknown resume id');
@@ -321,8 +341,8 @@ async function runTests() {
             if (userIds.length > 0) {
                 const resumes = await Resume.findAll({ where: { userId: userIds } });
                 for (const r of resumes) {
-                    if (r.fileUrl) {
-                        await storage.deleteFile(r.fileUrl.replace('/uploads/', '')).catch(() => {});
+                    if (r.fileKey) {
+                        await storage.deleteFile(r.fileKey).catch(() => {});
                     }
                 }
                 await Resume.destroy({ where: { userId: userIds } });
