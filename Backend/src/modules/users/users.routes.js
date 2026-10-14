@@ -48,4 +48,7 @@ router.post('/login', validate(validation.login), usersController.login);
 router.get('/profile', authenticate, usersController.getCandidateProfile);
 router.put('/profile', authenticate, validate(validation.updateProfile), usersController.updateCandidateProfile);
 
+// Recruiter/admin: candidates with interview stats
+router.get('/candidates', authenticate, authorizeRoles('recruiter', 'admin'), validate(validation.listCandidates), usersController.listCandidates);
+
 export default router;
