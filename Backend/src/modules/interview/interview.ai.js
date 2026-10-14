@@ -1,210 +1,324 @@
 /**
- * interview.ai.js — Gemini-powered AI helpers for the interview module
+ * interview.ai.js — Gemini prompts + schemas for the interview module
  *
- * Replaces the previous OpenAI implementation with @google/generative-ai.
- * All functions gracefully fall back to mock data when:
- *   - GEMINI_API_KEY is a placeholder / invalid
- *   - The API returns an error (quota, network, etc.)
+ *   generateQuestions(resumeContext, targetRole) → [{ id, type, text }] × 8
+ *       GEMINI_MODEL, strict JSON, Joi-validated, retried (502 on failure).
  *
- * Functions exported:
- *   generateFirstQuestion(resumeData, roleApplied) → { question, context }
- *   evaluateAnswer(question, answer, roleApplied)  → { score, feedback, isSatisfactory, followUpNeeded }
- *   generateNextQuestion(chatHistory)              → { question, context }
- *   generateFinalReport(fullConversation)          → { finalScore, summary, strengths, weaknesses, missingSkills, skillBreakdown, recommendedCourses }
+ *   nextTurn({ ... })                            → { action, text, source }
+ *       GEMINI_FAST_MODEL (lightweight) + small output budget + hard timeout,
+ *       because this runs between the candidate speaking and the AI replying.
+ *       Never throws: on timeout/error it falls back to moving on to the next
+ *       planned question (source: 'fallback') so the voice flow never stalls.
+ *       Not retried — a retry would blow the ~1.5–2 s latency budget.
+ *
+ *   generateReport({ ... })                      → { score, summary, strengths, weaknesses, skillGaps, skillBreakdown }
+ *       GEMINI_MODEL, strict JSON, Joi-validated, retried (502 on failure).
+ *       No silent mock fallback: a fabricated score would mislead the candidate.
+ *
+ * GEMINI_MOCK=true returns deterministic output for every function (dev/tests).
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Joi from 'joi';
+import { SchemaType } from '@google/generative-ai';
 import config from '../../config/env.js';
-import ApiError from '../../utils/ApiError.js';
+import {
+    isMockMode,
+    assertConfigured,
+    hasValidKey,
+    generateJson,
+    withRetry,
+} from '../../services/llm/gemini.client.js';
 
-// ── Gemini client ─────────────────────────────────────────────────────────────
-const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+export const QUESTION_COUNT = 8;
+export const QUESTION_TYPES = ['technical', 'project', 'behavioral'];
+
+/** Hard cap for a live turn; past this we fall back to the planned question */
+const TURN_TIMEOUT_MS = 5000;
+/** How many recent messages the turn prompt sees (keeps the prompt small → fast) */
+const TURN_HISTORY_MESSAGES = 8;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Keep at most `max` sentences — enforces the "max 2 sentences" rule server-side */
+const clampSentences = (text, max) => {
+    const sentences = String(text || '').trim().match(/[^.!?]+[.!?]*/g) || [];
+    return sentences.slice(0, max).join('').trim();
+};
+
+const wordCount = (text) => String(text || '').trim().split(/\s+/).filter(Boolean).length;
+
+const formatHistory = (messages) =>
+    messages.map((m) => `${m.role === 'ai' ? 'INTERVIEWER' : 'CANDIDATE'}: ${m.text}`).join('\n');
+
+// ── 1. Question generation ────────────────────────────────────────────────────
+
+const QUESTIONS_SCHEMA = {
+    type: SchemaType.OBJECT,
+    properties: {
+        questions: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    type: { type: SchemaType.STRING, format: 'enum', enum: QUESTION_TYPES },
+                    question: { type: SchemaType.STRING },
+                },
+                required: ['type', 'question'],
+            },
+        },
+    },
+    required: ['questions'],
+};
+
+const QUESTIONS_JOI = Joi.object({
+    questions: Joi.array()
+        .items(
+            Joi.object({
+                type: Joi.string().valid(...QUESTION_TYPES).required(),
+                question: Joi.string().trim().min(10).max(400).required(),
+            })
+        )
+        .min(QUESTION_COUNT)
+        .required(),
+});
+
+const buildQuestionsPrompt = (resumeContext, targetRole) => `
+You are an experienced interviewer preparing a spoken mock interview for the role: ${targetRole}.
+Write exactly ${QUESTION_COUNT} questions tailored to the candidate below, in the order they should be asked:
+- 3 "technical" questions on the candidate's strongest listed skills, pitched at their seniority
+- 3 "project" questions that dig into specific projects or roles named in the resume
+- 2 "behavioral" questions (teamwork, ownership, conflict, learning from failure)
+Start with an easy warm-up, interleave the types, and end with a behavioral question.
+Each question will be read aloud: max 2 short sentences, no lists, no code, no markdown.
+
+CANDIDATE (JSON):
+${JSON.stringify(resumeContext)}`.trim();
+
+const mockQuestions = (ctx) => {
+    const skills = ctx.skills?.length ? ctx.skills : ['JavaScript', 'APIs', 'databases'];
+    const projects = ctx.projects?.map((p) => p.name).filter(Boolean) || [];
+    const roles = ctx.experience?.map((e) => e.title && e.company && `${e.title} at ${e.company}`).filter(Boolean) || [];
+    const projectRefs = [...projects, ...roles, 'a recent project', 'your most complex feature'];
+
+    return [
+        { type: 'technical', question: `To warm up, how have you used ${skills[0]} in your recent work?` },
+        { type: 'project', question: `Walk me through ${projectRefs[0]} and the part you owned end to end.` },
+        { type: 'technical', question: `What trade-offs do you consider when choosing ${skills[1] || skills[0]} for a feature?` },
+        { type: 'project', question: `What was the hardest technical problem in ${projectRefs[1]}, and how did you solve it?` },
+        { type: 'technical', question: `How would you debug a slow request in a system built with ${skills[2] || skills[0]}?` },
+        { type: 'behavioral', question: 'Tell me about a time you disagreed with a teammate and how you resolved it.' },
+        { type: 'project', question: `If you rebuilt ${projectRefs[2]} today, what would you change and why?` },
+        { type: 'behavioral', question: 'Describe a mistake you made at work and what you learned from it.' },
+    ];
+};
 
 /**
- * Returns true only when a real (non-placeholder) Gemini key is configured.
+ * @param {Object} resumeContext - compact, PII-free resume summary (see interview.service.js)
+ * @param {string} targetRole
+ * @returns {Promise<Array<{ id: number, type: string, text: string }>>}
+ * @throws ApiError 503 (no key) / 502 (all attempts failed)
  */
-const hasValidKey = () =>
-    config.geminiApiKey &&
-    !config.geminiApiKey.startsWith('REPLACE_') &&
-    config.geminiApiKey !== 'your_gemini_api_key_here';
+const generateQuestions = async (resumeContext, targetRole) => {
+    const toPlan = (items) =>
+        items.slice(0, QUESTION_COUNT).map((q, i) => ({ id: i + 1, type: q.type, text: q.question }));
+
+    if (isMockMode()) return toPlan(mockQuestions(resumeContext));
+    assertConfigured();
+
+    return withRetry(
+        async () => {
+            const raw = await generateJson({
+                prompt: buildQuestionsPrompt(resumeContext, targetRole),
+                schema: QUESTIONS_SCHEMA,
+                temperature: 0.7, // some variety between interviews
+            });
+
+            const { error, value } = QUESTIONS_JOI.validate(raw, { stripUnknown: true });
+            if (error) throw new Error(`question schema validation failed: ${error.message}`);
+
+            const plan = toPlan(value.questions);
+            const missing = QUESTION_TYPES.filter((t) => !plan.some((q) => q.type === t));
+            if (missing.length) throw new Error(`question mix is missing: ${missing.join(', ')}`);
+            return plan;
+        },
+        { label: 'question generation' }
+    );
+};
+
+// ── 2. Live turn (follow-up or move on) ───────────────────────────────────────
+
+const TURN_SCHEMA = {
+    type: SchemaType.OBJECT,
+    properties: {
+        action: { type: SchemaType.STRING, format: 'enum', enum: ['follow_up', 'next'] },
+        followUp: { type: SchemaType.STRING },
+        acknowledgement: { type: SchemaType.STRING },
+    },
+    required: ['action'],
+};
+
+const buildTurnPrompt = ({ resumeContext, targetRole, history, currentQuestion, allowFollowUp }) => `
+You are a friendly, concise interviewer running a live VOICE mock interview for: ${targetRole}.
+Candidate background: skills ${JSON.stringify(resumeContext.skills?.slice(0, 15) || [])}, seniority "${resumeContext.seniorityLevel || 'unknown'}".
+Current planned question: "${currentQuestion.text}"
+
+Recent conversation:
+${formatHistory(history)}
+
+Decide what to say next about the candidate's LAST answer:
+${allowFollowUp
+        ? '- action "follow_up" ONLY if the answer was vague, very short or skipped something important; put ONE probing question in "followUp" (max 2 short sentences).\n- otherwise action "next".'
+        : '- a follow-up was already asked for this question, so action MUST be "next".'}
+- For "next", put a brief natural acknowledgement in "acknowledgement" (max 1 short sentence, no question, no praise inflation).
+Spoken output only: no markdown, no lists, no emojis.`.trim();
 
 /**
- * Shared helper: send a prompt to Gemini and parse the JSON response.
- * Wraps the response in a try/catch so callers get a clean fallback path.
+ * Decide the interviewer's next utterance. Never throws.
  *
- * @param {string} prompt
- * @returns {Promise<Object>} parsed JSON object from Gemini
+ * @param {Object} p
+ * @param {Object} p.resumeContext
+ * @param {string} p.targetRole
+ * @param {Array}  p.history          - transcript messages incl. the latest user answer
+ * @param {Object} p.currentQuestion  - planned question being discussed
+ * @param {boolean} p.allowFollowUp
+ * @returns {Promise<{ action: 'follow_up'|'next', text: string, source: 'llm'|'fallback'|'mock', error?: string }>}
+ *          `text` is the follow-up question or the acknowledgement (may be '').
  */
-const askGemini = async (prompt) => {
-    const model = genAI.getGenerativeModel({ model: config.geminiModel });
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+const nextTurn = async ({ resumeContext, targetRole, history, currentQuestion, allowFollowUp }) => {
+    const lastAnswer = [...history].reverse().find((m) => m.role === 'user')?.text || '';
 
-    // Strip markdown fences if Gemini wraps JSON in ```json ... ```
-    const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-    return JSON.parse(clean);
-};
-
-// ── Mock responses (used when API key is absent or on error) ──────────────────
-const MOCK_FIRST_Q = (roleApplied) => ({
-    question: `Could you walk me through a challenging project you've worked on relevant to ${roleApplied}?`,
-    context: 'Initial screening — understanding candidate background.',
-});
-
-const MOCK_EVAL = () => ({
-    score: 75,
-    feedback: 'Good answer covering the main points. Consider going deeper on technical trade-offs.',
-    isSatisfactory: true,
-    followUpNeeded: false,
-});
-
-const MOCK_NEXT_Q = () => ({
-    question: 'How do you approach error handling in asynchronous Node.js code?',
-    context: 'Deep-dive into technical fundamentals.',
-});
-
-const MOCK_REPORT = () => ({
-    finalScore: 78,
-    summary: 'The candidate demonstrated solid foundational knowledge with room to grow in system design.',
-    strengths: ['Communication', 'React proficiency', 'Problem-solving approach'],
-    weaknesses: ['System Design depth', 'Database optimisation'],
-    missingSkills: ['Docker', 'GraphQL', 'Redis'],
-    skillBreakdown: { React: 85, 'Node.js': 80, SQL: 70, 'System Design': 60 },
-    recommendedCourses: ['System Design Masterclass', 'Docker & Kubernetes', 'GraphQL Complete Guide'],
-});
-
-// ── Public functions ──────────────────────────────────────────────────────────
-
-/**
- * Generate the opening interview question based on the candidate's resume.
- */
-const generateFirstQuestion = async (resumeData, roleApplied) => {
-    if (!hasValidKey()) {
-        console.warn('⚠️  GEMINI_API_KEY not configured — using mock first question');
-        return MOCK_FIRST_Q(roleApplied);
+    if (isMockMode()) {
+        // Deterministic: probe short answers once, otherwise move on
+        if (allowFollowUp && wordCount(lastAnswer) < 12) {
+            return { action: 'follow_up', text: 'Could you go a bit deeper on that with a concrete example?', source: 'mock' };
+        }
+        return { action: 'next', text: 'Thanks, that helps.', source: 'mock' };
     }
 
-    const prompt = `
-You are an expert technical interviewer conducting a voice mock interview.
-Role applied for: ${roleApplied}
-Candidate resume summary: ${JSON.stringify(resumeData)}
-
-Generate the FIRST interview question. Make it open-ended, relevant to the role, and based on the resume.
-Respond ONLY with valid JSON (no markdown fences):
-{
-  "question": "The interview question text",
-  "context": "Brief internal note on why you asked this"
-}`;
+    const fallback = (reason) => ({ action: 'next', text: '', source: 'fallback', error: reason });
+    if (!hasValidKey()) return fallback('GEMINI_API_KEY not configured');
 
     try {
-        return await askGemini(prompt);
+        const raw = await generateJson({
+            prompt: buildTurnPrompt({
+                resumeContext,
+                targetRole,
+                history: history.slice(-TURN_HISTORY_MESSAGES),
+                currentQuestion,
+                allowFollowUp,
+            }),
+            schema: TURN_SCHEMA,
+            model: config.geminiFastModel,
+            temperature: 0.4,
+            maxOutputTokens: 150, // ~2 sentences; small budget = faster generation
+            timeoutMs: TURN_TIMEOUT_MS,
+        });
+
+        const followUp = clampSentences(raw.followUp, 2);
+        if (raw.action === 'follow_up' && allowFollowUp && followUp) {
+            return { action: 'follow_up', text: followUp, source: 'llm' };
+        }
+        return { action: 'next', text: clampSentences(raw.acknowledgement, 1), source: 'llm' };
     } catch (err) {
-        console.warn('⚠️  Gemini generateFirstQuestion failed — using mock:', err.message);
-        return MOCK_FIRST_Q(roleApplied);
+        console.warn(`⚠️  Gemini interview turn failed — moving to the planned question: ${err.message}`);
+        return fallback(err.message);
     }
 };
 
-/**
- * Evaluate the candidate's answer to a question and score it 0-100.
- */
-const evaluateAnswer = async (currentQuestion, userAnswer, roleApplied) => {
-    if (!hasValidKey()) {
-        console.warn('⚠️  GEMINI_API_KEY not configured — using mock evaluation');
-        return MOCK_EVAL();
-    }
+// ── 3. Final evaluation ───────────────────────────────────────────────────────
 
-    const prompt = `
-You are an expert technical interviewer evaluating a candidate's spoken answer.
-Role: ${roleApplied}
-Question asked: "${currentQuestion}"
-Candidate's answer: "${userAnswer}"
-
-Evaluate the answer objectively. Respond ONLY with valid JSON (no markdown fences):
-{
-  "score": <integer 0-100>,
-  "feedback": "<2-3 sentence constructive feedback>",
-  "isSatisfactory": <true|false>,
-  "followUpNeeded": <true|false>
-}`;
-
-    try {
-        return await askGemini(prompt);
-    } catch (err) {
-        console.warn('⚠️  Gemini evaluateAnswer failed — using mock:', err.message);
-        return MOCK_EVAL();
-    }
+const REPORT_SCHEMA = {
+    type: SchemaType.OBJECT,
+    properties: {
+        score: { type: SchemaType.INTEGER },
+        summary: { type: SchemaType.STRING },
+        strengths: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        weaknesses: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        skillGaps: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        skillBreakdown: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                properties: {
+                    skill: { type: SchemaType.STRING },
+                    score: { type: SchemaType.INTEGER },
+                },
+                required: ['skill', 'score'],
+            },
+        },
+    },
+    required: ['score', 'summary', 'strengths', 'weaknesses', 'skillGaps', 'skillBreakdown'],
 };
 
-/**
- * Generate the next question based on the conversation history so far.
- */
-const generateNextQuestion = async (chatHistory) => {
-    if (!hasValidKey()) {
-        console.warn('⚠️  GEMINI_API_KEY not configured — using mock next question');
-        return MOCK_NEXT_Q();
-    }
+const shortList = Joi.array().items(Joi.string().trim().min(1).max(200).truncate()).max(10);
 
-    // Only send the last 6 messages to keep the prompt short
-    const recentHistory = chatHistory.slice(-6).map(m => `${m.role}: ${m.text}`).join('\n');
+const REPORT_JOI = Joi.object({
+    score: Joi.number().integer().min(0).max(100).required(),
+    summary: Joi.string().trim().max(2000).truncate().allow('').default(''),
+    strengths: shortList.default([]),
+    weaknesses: shortList.default([]),
+    // Skill names only — the courses module matches these against course tags
+    skillGaps: Joi.array().items(Joi.string().trim().min(1).max(60).truncate()).max(10).default([]),
+    skillBreakdown: Joi.array()
+        .items(Joi.object({ skill: Joi.string().trim().max(60).truncate().required(), score: Joi.number().integer().min(0).max(100).required() }))
+        .max(12)
+        .default([]),
+});
 
-    const prompt = `
-You are an expert technical interviewer. Below is the recent interview conversation history.
-${recentHistory}
+const buildReportPrompt = ({ resumeContext, targetRole, questions, transcript }) => `
+You are a senior interviewer writing an honest evaluation of a mock interview for: ${targetRole}.
 
-Based on the candidate's answers so far, generate the NEXT most appropriate technical interview question.
-Respond ONLY with valid JSON (no markdown fences):
-{
-  "question": "The next interview question",
-  "context": "Brief internal note on why you chose this question"
-}`;
+Candidate resume summary (JSON): ${JSON.stringify(resumeContext)}
+Planned questions (JSON): ${JSON.stringify(questions.map((q) => ({ type: q.type, text: q.text })))}
 
-    try {
-        return await askGemini(prompt);
-    } catch (err) {
-        console.warn('⚠️  Gemini generateNextQuestion failed — using mock:', err.message);
-        return MOCK_NEXT_Q();
-    }
+Full transcript:
+${formatHistory(transcript)}
+
+Score ONLY what the candidate actually said. Unanswered questions count against the score.
+- score: integer 0-100 (50 = borderline for the role, 80+ = strong hire signal)
+- summary: 2-3 sentences
+- strengths / weaknesses: 2-5 short, specific bullet phrases each, grounded in the transcript
+- skillGaps: 1-6 concrete skill or topic NAMES to study (e.g. "System Design", "SQL indexing"), no sentences
+- skillBreakdown: 3-8 skills discussed, each with an integer 0-100 score`.trim();
+
+const mockReport = ({ resumeContext, transcript }) => {
+    const answers = transcript.filter((m) => m.role === 'user');
+    const avgWords = answers.reduce((n, m) => n + wordCount(m.text), 0) / Math.max(answers.length, 1);
+    const score = Math.max(20, Math.min(95, Math.round(40 + avgWords) + answers.length * 2));
+    const skills = resumeContext.skills?.length ? resumeContext.skills : ['Communication'];
+
+    return {
+        score,
+        summary: `Mock evaluation (GEMINI_MOCK=true) of ${answers.length} answer(s), averaging ${Math.round(avgWords)} words each.`,
+        strengths: ['Clear communication', `Hands-on experience with ${skills[0]}`],
+        weaknesses: ['Answers could include more measurable impact'],
+        skillGaps: ['System Design', 'Testing'],
+        skillBreakdown: skills.slice(0, 4).map((skill, i) => ({ skill, score: Math.max(40, score - i * 5) })),
+    };
 };
 
 /**
- * Generate a final interview performance report from the full transcript.
+ * @returns {Promise<{ score, summary, strengths, weaknesses, skillGaps, skillBreakdown }>}
+ * @throws ApiError 503 (no key) / 502 (all attempts failed)
  */
-const generateFinalReport = async (fullConversation) => {
-    if (!hasValidKey()) {
-        console.warn('⚠️  GEMINI_API_KEY not configured — using mock report');
-        return MOCK_REPORT();
-    }
+const generateReport = async ({ resumeContext, targetRole, questions, transcript }) => {
+    if (isMockMode()) return mockReport({ resumeContext, transcript });
+    assertConfigured();
 
-    const transcript = fullConversation
-        .map(m => `${m.role.toUpperCase()}: ${m.text}`)
-        .join('\n');
-
-    const prompt = `
-You are a senior technical interviewer. Below is the complete transcript of a mock interview.
-${transcript}
-
-Generate a comprehensive performance report. Respond ONLY with valid JSON (no markdown fences):
-{
-  "finalScore": <integer 0-100>,
-  "summary": "<2-3 sentence overall assessment>",
-  "strengths": ["<strength 1>", "<strength 2>"],
-  "weaknesses": ["<weakness 1>", "<weakness 2>"],
-  "missingSkills": ["<skill 1>", "<skill 2>"],
-  "skillBreakdown": { "<SkillName>": <score_0_to_100>, ... },
-  "recommendedCourses": ["<course topic 1>", "<course topic 2>"]
-}`;
-
-    try {
-        return await askGemini(prompt);
-    } catch (err) {
-        console.warn('⚠️  Gemini generateFinalReport failed — using mock:', err.message);
-        return MOCK_REPORT();
-    }
+    return withRetry(
+        async () => {
+            const raw = await generateJson({
+                prompt: buildReportPrompt({ resumeContext, targetRole, questions, transcript }),
+                schema: REPORT_SCHEMA,
+                temperature: 0.2,
+            });
+            const { error, value } = REPORT_JOI.validate(raw, { stripUnknown: true });
+            if (error) throw new Error(`report schema validation failed: ${error.message}`);
+            return value;
+        },
+        { label: 'interview evaluation' }
+    );
 };
 
-export default {
-    generateFirstQuestion,
-    evaluateAnswer,
-    generateNextQuestion,
-    generateFinalReport,
-};
+export default { generateQuestions, nextTurn, generateReport };
+export { clampSentences };

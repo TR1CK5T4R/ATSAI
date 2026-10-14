@@ -43,6 +43,8 @@ const config = {
     // Gemini
     geminiApiKey: process.env.GEMINI_API_KEY,
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    // Lightweight model for latency-critical live interview turns (~1.5–2 s target)
+    geminiFastModel: process.env.GEMINI_FAST_MODEL || 'gemini-2.5-flash-lite',
     geminiMock: process.env.GEMINI_MOCK === 'true',   // dev/test: deterministic offline parsing
 
     // CORS
