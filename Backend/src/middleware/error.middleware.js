@@ -48,6 +48,11 @@ const errorHandler = (err, _req, res, _next) => {
         isOperational = true;
     }
 
+    // Unexpected (programmer/DB) errors: never leak internals such as SQL text in production
+    if (!isOperational && statusCode >= 500 && process.env.NODE_ENV === 'production') {
+        message = 'Internal Server Error';
+    }
+
     // ── Build response ────────────────────────────────────────────────────────
     const body = {
         code: statusCode,

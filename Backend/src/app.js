@@ -10,8 +10,7 @@
  *   6. urlencoded    — form data parsing
  *   7. Routes        — /health, /api/*
  *   8. 404 handler   — catches unknown routes
- *   9. Error normaliser — upgrades non-ApiError errors
- *  10. Global error handler — formats and sends error response
+ *   9. Global error handler — maps library errors (Sequelize, JWT, Multer) and sends the response
  */
 
 import express from 'express';
@@ -29,8 +28,7 @@ import errorHandler from './middleware/error.middleware.js';
 import resumeRoutes   from './modules/resume/resume.routes.js';
 import interviewRoutes from './modules/interview/interview.routes.js';
 import usersRoutes, { authRouter, candidateRouter } from './modules/users/users.routes.js';
-// courses routes added later; placeholder import is safe with an empty router
-// import coursesRoutes  from './modules/courses/courses.routes.js';
+import coursesRoutes  from './modules/courses/courses.routes.js';
 
 const app = express();
 
@@ -126,7 +124,7 @@ app.use('/users',         usersRoutes);
 
 app.use('/api/resume',    resumeRoutes);
 app.use('/api/interview', interviewRoutes);
-// app.use('/api/courses',   coursesRoutes); // uncomment when module is ready
+app.use('/api/courses',   coursesRoutes);
 
 // Root sanity check
 app.get('/', (_req, res) => {
@@ -138,18 +136,9 @@ app.use((req, _res, next) => {
     next(new ApiError(404, `Route not found: ${req.method} ${req.originalUrl}`));
 });
 
-// ── 9. Normalise non-ApiError errors ──────────────────────────────────────────
-app.use((err, _req, _res, next) => {
-    if (!(err instanceof ApiError)) {
-        const statusCode = err.statusCode || 500;
-        const message = err.message || 'Internal Server Error';
-        next(new ApiError(statusCode, message, false, err.stack));
-    } else {
-        next(err);
-    }
-});
-
-// ── 10. Global error handler ──────────────────────────────────────────────────
+// ── 9. Global error handler ───────────────────────────────────────────────────
+// Receives raw errors on purpose: it maps Sequelize/JWT/Multer errors by name
+// (e.g. unique violation → 409), which wrapping them in ApiError would hide.
 app.use(errorHandler);
 
 export default app;
