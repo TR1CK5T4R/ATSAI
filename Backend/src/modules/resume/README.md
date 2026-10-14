@@ -75,7 +75,7 @@ MAX_FILE_SIZE=5242880        # 5 MB
 STORAGE_DRIVER=local         # local | s3 | cloudinary
 UPLOAD_DIR=uploads           # relative to Backend/ (local driver only)
 GEMINI_API_KEY=<your key>    # required for real parsing
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 GEMINI_MOCK=false            # true → deterministic offline parsing (dev/tests only)
 ```
 

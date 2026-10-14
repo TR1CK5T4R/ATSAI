@@ -42,7 +42,7 @@ const config = {
 
     // Gemini
     geminiApiKey: process.env.GEMINI_API_KEY,
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     geminiMock: process.env.GEMINI_MOCK === 'true',   // dev/test: deterministic offline parsing
 
     // CORS
