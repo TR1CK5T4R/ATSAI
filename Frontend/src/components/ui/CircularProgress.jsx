@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 
 const CircularProgress = ({ score, size = 120, strokeWidth = 8 }) => {

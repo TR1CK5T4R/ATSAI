@@ -1,106 +1,94 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+/**
+ * Interview.jsx — Real-time voice mock interview
+ *
+ * Flow: start screen → POST /interview/create (8 tailored questions) → the AI
+ * speaks each question (speechSynthesis) → the candidate answers by voice
+ * (SpeechRecognition, auto-submit after silence) or by typing → POST /:id/answer
+ * returns a follow-up or the next question → after the closing line, Finish
+ * evaluates the transcript and opens the report.
+ *
+ * Browsers without SpeechRecognition (or a denied mic) fall back to typing.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FiMic, FiMicOff, FiSend, FiXCircle, FiPlayCircle } from 'react-icons/fi';
+import { FiMic, FiMicOff, FiSend, FiPlayCircle, FiFlag, FiType } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { interviewApi } from '../api/interview.api';
 import { resumeApi } from '../api/resume.api';
 import useSpeech from '../hooks/useSpeech';
 import AIAvatar from '../components/chat/AIAvatar';
 import ChatMessage from '../components/chat/ChatMessage';
+import Button from '../components/ui/Button';
+import Spinner from '../components/ui/Spinner';
+
+const speechRecognitionSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
 
 const Interview = () => {
     const { state } = useLocation();
     const navigate = useNavigate();
-    const resumeIdFromState = state?.resumeId;
 
-    const [sessionId, setSessionId] = useState(null);
+    const [interviewId, setInterviewId] = useState(null);
     const [targetRole, setTargetRole] = useState('');
+    const [progress, setProgress] = useState({ current: 1, total: 8 });
     const [messages, setMessages] = useState([]);
-    const [isLoading, setIsLoading] = useState(false);
     const [inputText, setInputText] = useState('');
-    const [hasStarted, setHasStarted] = useState(false);
+    const [phase, setPhase] = useState('intro'); // intro | starting | live | done | finishing
+    const [isLoading, setIsLoading] = useState(false);
+    const [voiceMode, setVoiceMode] = useState(false);
 
     const bottomRef = useRef(null);
-    const inputTextRef = useRef(inputText);
-    const isLoadingRef = useRef(isLoading);
+    // Refs mirror state for the speech callbacks, which fire outside React's render cycle
+    const inputRef = useRef('');
+    const busyRef = useRef(false);
+    const phaseRef = useRef(phase);
+    const voiceRef = useRef(false);
+    const sendRef = useRef(() => {});
 
-    useEffect(() => { inputTextRef.current = inputText; }, [inputText]);
-    useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+    useEffect(() => { inputRef.current = inputText; }, [inputText]);
+    useEffect(() => { busyRef.current = isLoading; }, [isLoading]);
+    useEffect(() => { phaseRef.current = phase; }, [phase]);
+    useEffect(() => { voiceRef.current = voiceMode; }, [voiceMode]);
 
-    const handleSend = useCallback(async (textToSubmit) => {
-        const text = textToSubmit || inputTextRef.current;
-        if (!text.trim() || isLoadingRef.current) return;
-
-        const userMsg = { role: 'user', content: text, timestamp: new Date() };
-        setMessages(prev => [...prev, userMsg]);
-        setInputText('');
-        setTranscript('');
-        setIsLoading(true);
-        stopListening();
-
-        try {
-            const response = await interviewApi.submitAnswer(sessionId, userMsg.content);
-            const { reply } = response.data;
-
-            const aiMsg = {
-                role: 'ai',
-                content: reply,
-                timestamp: new Date()
-            };
-
-            setMessages(prev => [...prev, aiMsg]);
-            speak(reply);
-        } catch (error) {
-            toast.error('Failed to get response');
-            setIsLoading(false);
-        }
-    }, [sessionId]);
-
-    const handleSilence = useCallback(() => {
-        if (inputTextRef.current.trim() && !isLoadingRef.current) {
-            handleSend();
-        }
-    }, [handleSend]);
-
-    const handleSpeakEnd = useCallback(() => {
-        startListening();
-    }, []);
-
-    const { 
-        isListening, 
-        transcript, 
-        isSpeaking, 
-        permissionGranted, 
-        silenceTimeLeft, 
-        requestPermission, 
-        startListening, 
-        stopListening, 
-        speak, 
-        setTranscript 
-    } = useSpeech({
-        onSilence: handleSilence,
-        onSpeakEnd: handleSpeakEnd,
-        silenceTimeout: 5000
+    const speech = useSpeech({
+        silenceTimeout: 5000,
+        // Auto-submit after the candidate stops talking
+        onSilence: () => {
+            if (inputRef.current.trim() && !busyRef.current) sendRef.current();
+        },
+        // Listen again once the AI has finished speaking (not after the closing line)
+        onSpeakEnd: () => {
+            if (voiceRef.current && phaseRef.current === 'live') speech.startListening();
+        },
     });
-
-    useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, isSpeaking, isLoading]);
+    const { isListening, transcript, isSpeaking, silenceTimeLeft, setTranscript } = speech;
 
     useEffect(() => {
         if (transcript) setInputText(transcript);
     }, [transcript]);
 
-    const initSession = async () => {
-        const granted = await requestPermission();
-        if (!granted) return;
-        
-        setHasStarted(true);
+    useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages, isLoading]);
+
+    // Stop speech when leaving the page
+    useEffect(() => () => {
+        speech.stopListening();
+        speech.cancelSpeech();
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const addMessage = (role, content) => setMessages((prev) => [...prev, { role, content, timestamp: new Date() }]);
+
+    const startInterview = async () => {
+        setPhase('starting');
+        // Voice needs both browser support and microphone permission; otherwise type
+        const voice = speechRecognitionSupported && (await speech.requestPermission());
+        setVoiceMode(voice);
+        if (!voice) toast('Voice input unavailable — you can type your answers', { icon: '⌨️' });
+
         try {
-            setIsLoading(true);
-            // Use the resume just uploaded, or fall back to the user's latest one
-            let resumeId = resumeIdFromState;
+            let resumeId = state?.resumeId;
             if (!resumeId) {
                 const mine = await resumeApi.getMyResume();
                 resumeId = mine.data?.[0]?.id;
@@ -111,166 +99,194 @@ const Interview = () => {
                 return;
             }
 
-            const response = await interviewApi.createInterview(resumeId);
-            const { id: newSessionId, question, targetRole: role } = response.data;
+            const { data } = await interviewApi.createInterview(resumeId);
+            setInterviewId(data.id);
+            setTargetRole(data.targetRole);
+            setProgress({ current: data.questionNumber, total: data.totalQuestions });
+            addMessage('ai', data.question.text);
+            setPhase('live');
+            speech.speak(data.question.text);
+        } catch (err) {
+            toast.error(err.message);
+            setPhase('intro');
+        }
+    };
 
-            setSessionId(newSessionId);
-            setTargetRole(role);
+    const sendAnswer = useCallback(async () => {
+        const text = inputRef.current.trim();
+        if (!text || busyRef.current || !interviewId) return;
 
-            const initialMsg = {
-                role: 'ai',
-                content: question.text,
-                timestamp: new Date()
-            };
+        speech.stopListening();
+        addMessage('user', text);
+        setInputText('');
+        setTranscript('');
+        setIsLoading(true);
 
-            setMessages([initialMsg]);
-            speak(question.text);
-        } catch (error) {
-            toast.error('Failed to start interview');
-            navigate('/dashboard');
+        try {
+            const { data } = await interviewApi.submitAnswer(interviewId, text);
+            addMessage('ai', data.reply);
+            setProgress({ current: data.questionNumber, total: data.totalQuestions });
+            if (data.done) setPhase('done');
+            speech.speak(data.reply);
+        } catch (err) {
+            toast.error(err.message);
+            setInputText(text); // let the candidate retry without retyping
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [interviewId, speech, setTranscript]);
 
-    const handleEndInterview = async () => {
+    useEffect(() => { sendRef.current = sendAnswer; }, [sendAnswer]);
+
+    const finishInterview = async () => {
+        speech.stopListening();
+        speech.cancelSpeech();
+        const answered = messages.some((m) => m.role === 'user');
+        if (!answered) {
+            if (window.confirm('You haven\'t answered any questions. Leave without a report?')) navigate('/dashboard');
+            return;
+        }
+        setPhase('finishing');
         try {
-            stopListening();
-            if (sessionId) {
-                await interviewApi.finishInterview(sessionId);
-            }
-            toast.success('Interview Completed!');
-            navigate('/results', { state: { sessionId } });
-        } catch (error) {
-            toast.error('Error ending interview');
+            await interviewApi.finishInterview(interviewId);
+            toast.success('Interview complete!');
+            navigate(`/results?id=${interviewId}`);
+        } catch (err) {
+            toast.error(err.message);
+            setPhase(progress.current >= progress.total ? 'done' : 'live');
         }
     };
 
-    const handleKeyDown = (e) => {
+    const onKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            handleSend();
+            sendAnswer();
         }
     };
 
-    // Full screen overlay layout to escape the parent container padding/max-width
-    if (!hasStarted || !permissionGranted) {
+    // ── Start screen ──────────────────────────────────────────────────────────
+    if (phase === 'intro' || phase === 'starting') {
         return (
-            <div className="fixed inset-0 z-[100] bg-background flex flex-col items-center justify-center p-6">
-                <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="max-w-md w-full bg-surface border border-border rounded-2xl p-8 text-center shadow-2xl"
-                >
-                    <div className="w-16 h-16 bg-primary/20 text-primary rounded-full flex items-center justify-center mx-auto mb-6">
-                        <FiMic className="w-8 h-8" />
+            <div className="max-w-lg mx-auto">
+                <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="bg-surface border border-border rounded-2xl p-6 sm:p-8 text-center">
+                    <div className="w-16 h-16 bg-primary/15 text-primary rounded-2xl flex items-center justify-center mx-auto mb-6">
+                        <FiMic className="w-7 h-7" />
                     </div>
-                    <h2 className="text-2xl font-bold mb-4">Ready to Start?</h2>
-                    <p className="text-muted mb-8">
-                        The AI will conduct a voice interview tailored to your resume. 
-                        Please ensure you are in a quiet environment and grant microphone permissions when prompted.
+                    <h1 className="text-2xl font-bold mb-3">Ready for your mock interview?</h1>
+                    <p className="text-muted mb-2">8 questions tailored to your resume: technical, project-based and behavioral.</p>
+                    <p className="text-muted text-sm mb-8">
+                        Find a quiet spot and allow microphone access. You can also type your answers.
                     </p>
-                    <button
-                        onClick={initSession}
-                        className="w-full py-3 bg-primary text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-primary/90 transition-all"
-                    >
-                        <FiPlayCircle className="w-5 h-5" /> Start Interview
-                    </button>
+                    <Button size="lg" className="w-full" onClick={startInterview} loading={phase === 'starting'}>
+                        {phase === 'starting' ? 'Preparing your questions…' : <><FiPlayCircle /> Start interview</>}
+                    </Button>
                 </motion.div>
             </div>
         );
     }
 
+    // ── Live interview (full-screen, focused) ─────────────────────────────────
+    const inputDisabled = isLoading || phase !== 'live';
+
     return (
-        <div className="fixed inset-0 z-[100] bg-background flex flex-col max-w-4xl mx-auto shadow-2xl border-x border-white/5">
-            {/* Header / Avatar Area */}
-            <div className="flex flex-col items-center justify-center py-6 border-b border-white/5 bg-background/50 backdrop-blur-sm z-10 shrink-0">
-                <AIAvatar isSpeaking={isSpeaking} isThinking={isLoading} />
-                <h2 className="text-sm font-medium text-muted tracking-wide">
-                    Interviewing for <span className="text-white">{targetRole || 'your role'}</span>
-                </h2>
-                <button
-                    onClick={handleEndInterview}
-                    className="absolute right-4 top-6 text-xs text-red-400 hover:text-red-300 flex items-center gap-1 px-3 py-1.5 rounded-full border border-red-500/20 hover:bg-red-500/10 transition-colors"
-                >
-                    <FiXCircle /> End Session
-                </button>
-            </div>
+        <div className="fixed inset-0 z-[100] bg-background flex flex-col">
+            {phase === 'finishing' && (
+                <div className="absolute inset-0 z-30 bg-background/90 backdrop-blur flex flex-col items-center justify-center gap-3 text-center px-6">
+                    <Spinner className="w-10 h-10 text-primary" />
+                    <p className="font-medium">Evaluating your interview…</p>
+                    <p className="text-sm text-muted">This usually takes a few seconds.</p>
+                </div>
+            )}
 
-            {/* Chat Area */}
-            <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6 scrollbar-hide">
-                <AnimatePresence>
-                    {messages.map((msg, idx) => (
-                        <ChatMessage key={idx} message={msg} />
-                    ))}
-
-                    {isLoading && (
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="flex items-center gap-2 text-muted text-sm ml-12"
-                        >
-                            <div className="flex gap-1">
-                                {[0, 1, 2].map(i => (
-                                    <motion.div
-                                        key={i}
-                                        animate={{ y: [0, -5, 0] }}
-                                        transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.2 }}
-                                        className="w-1.5 h-1.5 bg-accent rounded-full"
-                                    />
-                                ))}
+            {/* Header */}
+            <header className="shrink-0 border-b border-border bg-background/80 backdrop-blur">
+                <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate">{targetRole || 'Mock interview'}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                            <div className="h-1.5 w-28 sm:w-40 rounded-full bg-white/10 overflow-hidden">
+                                <div className="h-full bg-primary transition-all" style={{ width: `${(Math.min(progress.current, progress.total) / progress.total) * 100}%` }} />
                             </div>
-                            AI is thinking...
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-                <div ref={bottomRef} />
-            </div>
-
-            {/* Input Area */}
-            <div className="p-4 bg-surface border-t border-white/5 mx-4 mb-4 rounded-2xl shadow-2xl relative z-20 shrink-0">
-                {isListening && transcript && !isLoading && (
-                    <div className="absolute -top-8 left-0 right-0 flex justify-center">
-                        <div className="bg-primary/20 border border-primary/30 text-primary text-xs px-3 py-1 rounded-full animate-pulse flex items-center gap-2">
-                            <span>Auto-submitting in {silenceTimeLeft}s</span>
-                            <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                            <span className="text-xs text-muted whitespace-nowrap">
+                                Question {Math.min(progress.current, progress.total)} of {progress.total}
+                            </span>
                         </div>
                     </div>
-                )}
-                
-                <div className="flex items-end gap-3">
-                    <button
-                        onClick={isListening ? stopListening : startListening}
-                        disabled={isLoading || isSpeaking}
-                        className={`p-3 rounded-full transition-all disabled:opacity-50 ${
-                            isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-white/5 text-muted hover:text-white'
-                        }`}
-                    >
-                        {isListening ? <FiMicOff /> : <FiMic />}
-                    </button>
+                    <Button variant={phase === 'done' ? 'primary' : 'danger'} size="sm" onClick={finishInterview}>
+                        <FiFlag /> {phase === 'done' ? 'See report' : 'Finish'}
+                    </Button>
+                </div>
+            </header>
 
-                    <div className="flex-1 relative">
+            {/* Avatar */}
+            <div className="shrink-0 pt-6 pb-2">
+                <AIAvatar isSpeaking={isSpeaking} isThinking={isLoading} />
+            </div>
+
+            {/* Transcript */}
+            <div className="flex-1 overflow-y-auto">
+                <div className="max-w-3xl mx-auto px-4 py-4 flex flex-col">
+                    <AnimatePresence initial={false}>
+                        {messages.map((msg, idx) => <ChatMessage key={idx} message={msg} />)}
+                    </AnimatePresence>
+                    {isLoading && (
+                        <div className="flex items-center gap-2 text-muted text-sm ml-12 mb-6">
+                            <Spinner className="w-3.5 h-3.5" /> Interviewer is thinking…
+                        </div>
+                    )}
+                    {phase === 'done' && (
+                        <div className="self-center mt-2 mb-6 text-center">
+                            <Button size="lg" onClick={finishInterview}><FiFlag /> Finish & see my report</Button>
+                        </div>
+                    )}
+                    <div ref={bottomRef} />
+                </div>
+            </div>
+
+            {/* Composer */}
+            <div className="shrink-0 border-t border-border bg-surface/80 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+                <div className="max-w-3xl mx-auto px-4 py-3 relative">
+                    {isListening && inputText && !isLoading && (
+                        <div className="absolute -top-9 inset-x-0 flex justify-center pointer-events-none">
+                            <span className="bg-primary/15 border border-primary/30 text-primary text-xs px-3 py-1 rounded-full">
+                                Sending in {silenceTimeLeft}s…
+                            </span>
+                        </div>
+                    )}
+                    <div className="flex items-end gap-2">
+                        {voiceMode ? (
+                            <button
+                                onClick={isListening ? speech.stopListening : speech.startListening}
+                                disabled={inputDisabled || isSpeaking}
+                                aria-label={isListening ? 'Stop listening' : 'Start listening'}
+                                className={`shrink-0 w-11 h-11 rounded-xl flex items-center justify-center transition-colors disabled:opacity-40 ${
+                                    isListening ? 'bg-danger/15 text-danger animate-pulse' : 'bg-white/5 text-muted hover:text-text'
+                                }`}
+                            >
+                                {isListening ? <FiMicOff /> : <FiMic />}
+                            </button>
+                        ) : (
+                            <span className="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-white/5 text-muted" title="Typing mode">
+                                <FiType />
+                            </span>
+                        )}
                         <textarea
                             value={inputText}
                             onChange={(e) => {
                                 setInputText(e.target.value);
-                                setTranscript(e.target.value); // Sync manual typing
+                                setTranscript(e.target.value);
                             }}
-                            onKeyDown={handleKeyDown}
-                            placeholder="Type your answer or speak..."
-                            className="w-full bg-transparent text-text placeholder-muted resize-none outline-none py-3 max-h-32"
+                            onKeyDown={onKeyDown}
+                            placeholder={phase === 'done' ? 'All questions answered' : voiceMode ? 'Speak or type your answer…' : 'Type your answer…'}
+                            aria-label="Your answer"
                             rows={1}
-                            disabled={isLoading || isSpeaking}
+                            disabled={inputDisabled}
+                            className="flex-1 min-h-11 max-h-32 resize-none bg-background border border-border rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary/60 disabled:opacity-50"
                         />
+                        <Button className="shrink-0 w-11 px-0" onClick={sendAnswer} disabled={!inputText.trim() || inputDisabled} aria-label="Send answer">
+                            <FiSend />
+                        </Button>
                     </div>
-
-                    <button
-                        onClick={() => handleSend()}
-                        disabled={!inputText.trim() || isLoading || isSpeaking}
-                        className="p-3 bg-primary text-white rounded-xl disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
-                    >
-                        <FiSend />
-                    </button>
                 </div>
             </div>
         </div>

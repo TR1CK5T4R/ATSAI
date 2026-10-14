@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 
 const AIAvatar = ({ isSpeaking, isThinking }) => {
